@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 
-	// "github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/constructs-go/constructs/v10"
 	"github.com/aws/jsii-runtime-go"
 )
@@ -50,8 +49,9 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 			Name: jsii.String("url_hash"),
 			Type: awsdynamodb.AttributeType_STRING,
 		},
-		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
-		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+		BillingMode:         awsdynamodb.BillingMode_PAY_PER_REQUEST,
+		RemovalPolicy:       awscdk.RemovalPolicy_DESTROY,
+		TimeToLiveAttribute: jsii.String("expires_at"),
 	})
 
 	awscdk.Tags_Of(queue).Add(jsii.String("Component"), jsii.String("crawler-frontier"), nil)
