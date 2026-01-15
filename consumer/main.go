@@ -16,6 +16,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
+const (
+	stateQueued     = "queued"
+	stateProcessing = "processing"
+	stateDone       = "done"
+	stateFailed     = "failed"
+)
+
 func hashURL(u string) string {
 	h := sha256.Sum256([]byte(u))
 	return hex.EncodeToString(h[:])
@@ -67,20 +74,20 @@ func main() {
 	urlHash := hashURL(url)
 
 	// Try to transition queued → processing
-	item, err := ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	_, err = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &tableName,
 		Key: map[string]types.AttributeValue{
 			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
 		},
-		UpdateExpression:    aws.String("SET #s = :processing, processing_at = :now"),
+		UpdateExpression:    aws.String("SET #s = :processing, processing_at = :now ADD attempts :one"),
 		ConditionExpression: aws.String("#s = :queued"),
-		ExpressionAttributeNames: map[string]string{
-			"#s": "status",
-		},
+
+		ExpressionAttributeNames: map[string]string{"#s": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":queued":     &types.AttributeValueMemberS{Value: "queued"},
-			":processing": &types.AttributeValueMemberS{Value: "processing"},
+			":queued":     &types.AttributeValueMemberS{Value: stateQueued},
+			":processing": &types.AttributeValueMemberS{Value: stateProcessing},
 			":now":        &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+			":one":        &types.AttributeValueMemberN{Value: "1"},
 		},
 	})
 
@@ -95,18 +102,45 @@ func main() {
 		return
 	}
 
+	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
+
+	_, err = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &tableName,
+		Key: map[string]types.AttributeValue{
+			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
+		},
+		UpdateExpression: aws.String(
+			"SET #s = :done, finished_at = :now, expires_at = :ttl",
+		),
+		ExpressionAttributeNames: map[string]string{
+			"#s": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":done": &types.AttributeValueMemberS{Value: stateDone},
+			":now":  &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+			":ttl":  &types.AttributeValueMemberN{Value: fmt.Sprint(ttl)},
+		},
+	})
+
 	if *fail {
 		fmt.Println("Simulating failure (message not deleted)")
+		_, _ = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: &tableName,
+			Key: map[string]types.AttributeValue{
+				"url_hash": &types.AttributeValueMemberS{Value: urlHash},
+			},
+			UpdateExpression: aws.String(
+				"SET #s = :failed, finished_at = :now, expires_at = :ttl",
+			),
+			ExpressionAttributeNames: map[string]string{
+				"#s": "status",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":failed": &types.AttributeValueMemberS{Value: stateFailed},
+				":now":    &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+				":ttl":    &types.AttributeValueMemberN{Value: fmt.Sprint(ttl)},
+			},
+		})
 		return
 	}
-
-	_, err = client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
-		QueueUrl:      &queueURL,
-		ReceiptHandle: msg.ReceiptHandle,
-	})
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println("Message acknowledged (deleted)")
 }
