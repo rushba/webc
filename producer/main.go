@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/joho/godotenv"
 )
 
 func hashURL(u string) string {
@@ -19,6 +20,8 @@ func hashURL(u string) string {
 }
 
 func main() {
+	_ = godotenv.Load("../.env")
+
 	queueURL := os.Getenv("QUEUE_URL")
 	tableName := os.Getenv("TABLE_NAME")
 

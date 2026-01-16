@@ -9,10 +9,12 @@ Distributed web crawler using AWS (SQS, DynamoDB) and Go.
 - SQS = delivery, DynamoDB = truth
 - At-least-once delivery + exactly-once processing
 - Cost safety first
+- **Test each step before proceeding to the next**
 
 ## Current State
 - **Phases 0-4**: Complete
 - **Phase 5**: In progress (concurrency)
+- **Current Step**: 5.1 — Prove race handling works
 
 ## Directory Structure
 ```
@@ -44,3 +46,5 @@ Only ONE consumer wins the race. Losers ACK and exit.
 2. One change at a time
 3. Explain before implementing
 4. Keep files small and focused
+5. **Do NOT proceed to next step until current step is tested and confirmed working**
+6. **Wait for user confirmation after each step**

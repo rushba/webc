@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/joho/godotenv"
 )
 
 const (
@@ -32,6 +33,9 @@ func hashURL(u string) string {
 }
 
 func main() {
+	// Load .env file (silent fail if not present — allows real env vars)
+	_ = godotenv.Load("../.env")
+
 	continuous := flag.Bool("continuous", false, "Run continuously (poll loop)")
 	fail := flag.Bool("fail", false, "Simulate failure")
 	flag.Parse()
@@ -136,10 +140,12 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 	})
 
 	if err != nil {
-		fmt.Println("Already handled, acking:", url)
+		fmt.Println("LOST race — already claimed by another consumer:", url)
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 		return
 	}
+
+	fmt.Println("WON race — claimed for processing:", url)
 
 	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
 
