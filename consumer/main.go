@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 const (
@@ -29,6 +32,7 @@ func hashURL(u string) string {
 }
 
 func main() {
+	continuous := flag.Bool("continuous", false, "Run continuously (poll loop)")
 	fail := flag.Bool("fail", false, "Simulate failure")
 	flag.Parse()
 
@@ -40,7 +44,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		fmt.Printf("\nReceived %v, shutting down...\n", sig)
+		cancel()
+	}()
+
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
 		panic(err)
@@ -49,15 +64,39 @@ func main() {
 	sqsClient := sqs.NewFromConfig(cfg)
 	ddb := dynamodb.NewFromConfig(cfg)
 
-	// Receive one message
+	if *continuous {
+		fmt.Println("Starting continuous polling (Ctrl+C to stop)...")
+		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail)
+	} else {
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail)
+	}
+}
+
+func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("Stopped.")
+			return
+		default:
+		}
+
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail)
+	}
+}
+
+func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool) {
 	out, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &queueURL,
 		MaxNumberOfMessages: 1,
-		WaitTimeSeconds:     10,
-		VisibilityTimeout:   30,
+		WaitTimeSeconds:     20, // Long polling (max)
 	})
 	if err != nil {
-		panic(err)
+		if ctx.Err() != nil {
+			return // Shutdown requested
+		}
+		fmt.Println("Poll error:", err)
+		return
 	}
 
 	if len(out.Messages) == 0 {
@@ -66,13 +105,17 @@ func main() {
 	}
 
 	msg := out.Messages[0]
+	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail)
+}
+
+func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool) {
 	url := *msg.Body
 	urlHash := hashURL(url)
 
 	fmt.Println("Received:", url)
 
 	// Step 1: queued → processing (idempotent gate)
-	_, err = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	_, err := ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &tableName,
 		Key: map[string]types.AttributeValue{
 			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
@@ -93,7 +136,6 @@ func main() {
 	})
 
 	if err != nil {
-		// Already processed or in-flight → ACK and exit
 		fmt.Println("Already handled, acking:", url)
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 		return
@@ -102,7 +144,7 @@ func main() {
 	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
 
 	// Step 2: failure path
-	if *fail {
+	if simulateFail {
 		fmt.Println("Simulating failure")
 
 		_, _ = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -123,7 +165,6 @@ func main() {
 			},
 		})
 
-		// Terminal failure → ACK
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 		return
 	}
@@ -153,7 +194,6 @@ func main() {
 		panic(err)
 	}
 
-	// ACK on success
 	ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 
 	fmt.Println("Processed successfully:", url)
