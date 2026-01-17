@@ -11,12 +11,30 @@ Run multiple consumers safely. Increase throughput without races.
 **What**: Run 2 consumers in separate terminals against the same queue.
 **Why**: Verify only one wins the `queued → processing` transition.
 **How**: 
-- Enqueue 1 URL
-- Start consumer in terminal A
-- Start consumer in terminal B
-- Observe: one prints "WON", other prints "LOST" (already handled)
+1. Reset state: delete any existing items in DynamoDB table
+2. Enqueue 1 URL using producer
+3. Start consumer in terminal A with `--continuous`
+4. Start consumer in terminal B with `--continuous`
+5. Observe: one prints "WON race", other prints "LOST race"
 
-**Status**: [ ] Not started
+**Test Commands**:
+```bash
+# Terminal 1: Enqueue a test URL
+cd producer && go run . "https://example.com/test-race-$(date +%s)"
+
+# Terminal 2: Start consumer A
+cd consumer && go run . --continuous
+
+# Terminal 3: Start consumer B  
+cd consumer && go run . --continuous
+```
+
+**Expected Output**:
+- Consumer A: `WON race — claimed for processing: <url>`
+- Consumer B: `LOST race — already claimed by another consumer: <url>`
+  (or vice versa)
+
+**Status**: [x] Complete
 
 ---
 
@@ -25,7 +43,26 @@ Run multiple consumers safely. Increase throughput without races.
 **Why**: Traceability when running multiple instances.
 **How**: Small edit to `consumer/main.go`
 
-**Status**: [ ] Not started
+**Flags**:
+```bash
+--worker-id=worker-A    # Custom ID (default: random 6-char)
+--log-format=console    # console (colored) or json
+--log-level=info        # debug, info, warn, error
+```
+
+**Usage**:
+```bash
+# Colored console (development)
+go run . --continuous --worker-id=worker-A
+
+# JSON output (production / log files)
+go run . --continuous --worker-id=worker-A --log-format=json
+
+# Debug level (see "No messages" polling)
+go run . --continuous --log-level=debug
+```
+
+**Status**: [x] Complete — zerolog added
 
 ---
 
@@ -63,7 +100,7 @@ Run multiple consumers safely. Increase throughput without races.
 ---
 
 ## Current Step
-→ **5.1 — Prove race handling works**
+→ **5.3 — Increase batch size** (next)
 
 ## Notes
 - Don't add complexity until current step is proven

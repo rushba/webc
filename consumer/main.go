@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
-	"fmt"
 	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/joho/godotenv"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -42,6 +43,31 @@ func generateWorkerID() string {
 	return string(b)
 }
 
+func setupLogger(format, level, workerID string) zerolog.Logger {
+	// Parse log level
+	lvl, err := zerolog.ParseLevel(level)
+	if err != nil {
+		lvl = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(lvl)
+
+	var log zerolog.Logger
+
+	if format == "json" {
+		// JSON output for log files / production
+		log = zerolog.New(os.Stdout).With().Timestamp().Str("worker_id", workerID).Logger()
+	} else {
+		// Colored console output for development
+		output := zerolog.ConsoleWriter{
+			Out:        os.Stdout,
+			TimeFormat: "15:04:05",
+		}
+		log = zerolog.New(output).With().Timestamp().Str("worker_id", workerID).Logger()
+	}
+
+	return log
+}
+
 func main() {
 	// Load .env file (silent fail if not present — allows real env vars)
 	_ = godotenv.Load("../.env")
@@ -49,6 +75,8 @@ func main() {
 	continuous := flag.Bool("continuous", false, "Run continuously (poll loop)")
 	fail := flag.Bool("fail", false, "Simulate failure")
 	workerID := flag.String("worker-id", "", "Worker ID for traceability (default: random)")
+	logFormat := flag.String("log-format", "console", "Log format: console (colored) or json")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	flag.Parse()
 
 	// Generate random worker ID if not provided
@@ -56,12 +84,14 @@ func main() {
 		*workerID = generateWorkerID()
 	}
 
+	// Setup logger
+	log := setupLogger(*logFormat, *logLevel, *workerID)
+
 	queueURL := os.Getenv("QUEUE_URL")
 	tableName := os.Getenv("TABLE_NAME")
 
 	if queueURL == "" || tableName == "" {
-		fmt.Println("QUEUE_URL and TABLE_NAME must be set")
-		os.Exit(1)
+		log.Fatal().Msg("QUEUE_URL and TABLE_NAME must be set")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -72,40 +102,40 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
-		fmt.Printf("\n[%s] Received %v, shutting down...\n", *workerID, sig)
+		log.Info().Str("signal", sig.String()).Msg("Shutting down")
 		cancel()
 	}()
 
 	cfg, err := config.LoadDefaultConfig(ctx)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to load AWS config")
 	}
 
 	sqsClient := sqs.NewFromConfig(cfg)
 	ddb := dynamodb.NewFromConfig(cfg)
 
 	if *continuous {
-		fmt.Printf("[%s] Starting continuous polling (Ctrl+C to stop)...\n", *workerID)
-		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, *workerID)
+		log.Info().Msg("Starting continuous polling (Ctrl+C to stop)")
+		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, log)
 	} else {
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, *workerID)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, log)
 	}
 }
 
-func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, workerID string) {
+func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, log zerolog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Printf("[%s] Stopped.\n", workerID)
+			log.Info().Msg("Stopped")
 			return
 		default:
 		}
 
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail, workerID)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail, log)
 	}
 }
 
-func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, workerID string) {
+func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, log zerolog.Logger) {
 	out, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &queueURL,
 		MaxNumberOfMessages: 1,
@@ -115,24 +145,24 @@ func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, 
 		if ctx.Err() != nil {
 			return // Shutdown requested
 		}
-		fmt.Printf("[%s] Poll error: %v\n", workerID, err)
+		log.Error().Err(err).Msg("Poll error")
 		return
 	}
 
 	if len(out.Messages) == 0 {
-		fmt.Printf("[%s] No messages\n", workerID)
+		log.Debug().Msg("No messages")
 		return
 	}
 
 	msg := out.Messages[0]
-	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail, workerID)
+	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail, log)
 }
 
-func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, workerID string) {
+func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, log zerolog.Logger) {
 	url := *msg.Body
 	urlHash := hashURL(url)
 
-	fmt.Printf("[%s] Received: %s\n", workerID, url)
+	log.Info().Str("url", url).Msg("Received")
 
 	// Step 1: queued → processing (idempotent gate)
 	_, err := ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -156,18 +186,19 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 	})
 
 	if err != nil {
-		fmt.Printf("[%s] LOST race — already claimed by another consumer: %s\n", workerID, url)
+		log.Warn().Str("url", url).Msg("LOST race — already claimed by another consumer")
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 		return
 	}
 
-	fmt.Printf("[%s] WON race — claimed for processing: %s\n", workerID, url)
+	log.Info().Str("url", url).Msg("WON race — claimed for processing")
 
 	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
+	ttlStr := strconv.FormatInt(ttl, 10)
 
 	// Step 2: failure path
 	if simulateFail {
-		fmt.Printf("[%s] Simulating failure\n", workerID)
+		log.Warn().Str("url", url).Msg("Simulating failure")
 
 		_, _ = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName: &tableName,
@@ -183,7 +214,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 			ExpressionAttributeValues: map[string]types.AttributeValue{
 				":failed": &types.AttributeValueMemberS{Value: stateFailed},
 				":now":    &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-				":ttl":    &types.AttributeValueMemberN{Value: fmt.Sprint(ttl)},
+				":ttl":    &types.AttributeValueMemberN{Value: ttlStr},
 			},
 		})
 
@@ -209,16 +240,16 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":done": &types.AttributeValueMemberS{Value: stateDone},
 			":now":  &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-			":ttl":  &types.AttributeValueMemberN{Value: fmt.Sprint(ttl)},
+			":ttl":  &types.AttributeValueMemberN{Value: ttlStr},
 		},
 	})
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Str("url", url).Msg("Failed to mark as done")
 	}
 
 	ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 
-	fmt.Printf("[%s] Processed successfully: %s\n", workerID, url)
+	log.Info().Str("url", url).Msg("Processed successfully")
 }
 
 func ack(ctx context.Context, client *sqs.Client, queueURL string, receipt *string) {
