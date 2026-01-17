@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
@@ -32,13 +33,28 @@ func hashURL(u string) string {
 	return hex.EncodeToString(h[:])
 }
 
+func generateWorkerID() string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 6)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
 func main() {
 	// Load .env file (silent fail if not present — allows real env vars)
 	_ = godotenv.Load("../.env")
 
 	continuous := flag.Bool("continuous", false, "Run continuously (poll loop)")
 	fail := flag.Bool("fail", false, "Simulate failure")
+	workerID := flag.String("worker-id", "", "Worker ID for traceability (default: random)")
 	flag.Parse()
+
+	// Generate random worker ID if not provided
+	if *workerID == "" {
+		*workerID = generateWorkerID()
+	}
 
 	queueURL := os.Getenv("QUEUE_URL")
 	tableName := os.Getenv("TABLE_NAME")
@@ -56,7 +72,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigChan
-		fmt.Printf("\nReceived %v, shutting down...\n", sig)
+		fmt.Printf("\n[%s] Received %v, shutting down...\n", *workerID, sig)
 		cancel()
 	}()
 
@@ -69,27 +85,27 @@ func main() {
 	ddb := dynamodb.NewFromConfig(cfg)
 
 	if *continuous {
-		fmt.Println("Starting continuous polling (Ctrl+C to stop)...")
-		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail)
+		fmt.Printf("[%s] Starting continuous polling (Ctrl+C to stop)...\n", *workerID)
+		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, *workerID)
 	} else {
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, *workerID)
 	}
 }
 
-func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool) {
+func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, workerID string) {
 	for {
 		select {
 		case <-ctx.Done():
-			fmt.Println("Stopped.")
+			fmt.Printf("[%s] Stopped.\n", workerID)
 			return
 		default:
 		}
 
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail, workerID)
 	}
 }
 
-func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool) {
+func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, workerID string) {
 	out, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &queueURL,
 		MaxNumberOfMessages: 1,
@@ -99,24 +115,24 @@ func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, 
 		if ctx.Err() != nil {
 			return // Shutdown requested
 		}
-		fmt.Println("Poll error:", err)
+		fmt.Printf("[%s] Poll error: %v\n", workerID, err)
 		return
 	}
 
 	if len(out.Messages) == 0 {
-		fmt.Println("No messages")
+		fmt.Printf("[%s] No messages\n", workerID)
 		return
 	}
 
 	msg := out.Messages[0]
-	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail)
+	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail, workerID)
 }
 
-func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool) {
+func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, workerID string) {
 	url := *msg.Body
 	urlHash := hashURL(url)
 
-	fmt.Println("Received:", url)
+	fmt.Printf("[%s] Received: %s\n", workerID, url)
 
 	// Step 1: queued → processing (idempotent gate)
 	_, err := ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -140,18 +156,18 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 	})
 
 	if err != nil {
-		fmt.Println("LOST race — already claimed by another consumer:", url)
+		fmt.Printf("[%s] LOST race — already claimed by another consumer: %s\n", workerID, url)
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 		return
 	}
 
-	fmt.Println("WON race — claimed for processing:", url)
+	fmt.Printf("[%s] WON race — claimed for processing: %s\n", workerID, url)
 
 	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
 
 	// Step 2: failure path
 	if simulateFail {
-		fmt.Println("Simulating failure")
+		fmt.Printf("[%s] Simulating failure\n", workerID)
 
 		_, _ = ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 			TableName: &tableName,
@@ -202,7 +218,7 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 
 	ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
 
-	fmt.Println("Processed successfully:", url)
+	fmt.Printf("[%s] Processed successfully: %s\n", workerID, url)
 }
 
 func ack(ctx context.Context, client *sqs.Client, queueURL string, receipt *string) {
