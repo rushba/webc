@@ -71,7 +71,16 @@ go run . --continuous --log-level=debug
 **Why**: Fewer network round trips, higher throughput.
 **How**: Add `--batch-size` flag (1-10)
 
-**Status**: [ ] Not started
+**Usage**:
+```bash
+# Default (1 message per poll)
+go run . --continuous
+
+# Batch of 10 messages per poll
+go run . --continuous --batch-size=10
+```
+
+**Status**: [x] Complete
 
 ---
 
@@ -100,7 +109,7 @@ go run . --continuous --log-level=debug
 ---
 
 ## Current Step
-→ **5.3 — Increase batch size** (next)
+→ **5.4 — Tune visibility timeout** (next)
 
 ## Notes
 - Don't add complexity until current step is proven

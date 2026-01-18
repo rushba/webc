@@ -77,7 +77,13 @@ func main() {
 	workerID := flag.String("worker-id", "", "Worker ID for traceability (default: random)")
 	logFormat := flag.String("log-format", "console", "Log format: console (colored) or json")
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
+	batchSize := flag.Int("batch-size", 1, "Number of messages to fetch per poll (1-10)")
 	flag.Parse()
+
+	// Validate batch size
+	if *batchSize < 1 || *batchSize > 10 {
+		*batchSize = 1
+	}
 
 	// Generate random worker ID if not provided
 	if *workerID == "" {
@@ -115,14 +121,14 @@ func main() {
 	ddb := dynamodb.NewFromConfig(cfg)
 
 	if *continuous {
-		log.Info().Msg("Starting continuous polling (Ctrl+C to stop)")
-		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, log)
+		log.Info().Int("batch_size", *batchSize).Msg("Starting continuous polling (Ctrl+C to stop)")
+		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, log)
 	} else {
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, log)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, log)
 	}
 }
 
-func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, log zerolog.Logger) {
+func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log zerolog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -131,14 +137,14 @@ func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, q
 		default:
 		}
 
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail, log)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, simulateFail, batchSize, log)
 	}
 }
 
-func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, log zerolog.Logger) {
+func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log zerolog.Logger) {
 	out, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &queueURL,
-		MaxNumberOfMessages: 1,
+		MaxNumberOfMessages: int32(batchSize),
 		WaitTimeSeconds:     20, // Long polling (max)
 	})
 	if err != nil {
@@ -154,8 +160,11 @@ func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, 
 		return
 	}
 
-	msg := out.Messages[0]
-	processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail, log)
+	log.Debug().Int("count", len(out.Messages)).Msg("Received batch")
+
+	for _, msg := range out.Messages {
+		processMessage(ctx, sqsClient, ddb, queueURL, tableName, msg, simulateFail, log)
+	}
 }
 
 func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, log zerolog.Logger) {
