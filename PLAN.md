@@ -89,8 +89,9 @@ go run . --continuous --batch-size=10
 **Why**: If processing takes longer than timeout, message reappears → duplicate delivery.
 **Current**: 30 seconds (set in CDK)
 **Rule**: VisibilityTimeout > max processing time
+**Decision**: Keep 30s — provides safe margin over 5s simulated processing.
 
-**Status**: [ ] Not started
+**Status**: [x] Complete — no change needed
 
 ---
 
@@ -102,14 +103,104 @@ go run . --continuous --batch-size=10
 - `NumberOfMessagesReceived` — throughput
 - `ApproximateAgeOfOldestMessage` — latency/backlog
 
-**How**: AWS Console or CLI
+**How**: 
+```bash
+QUEUE_NAME=$(basename $QUEUE_URL)
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/SQS \
+  --metric-name ApproximateNumberOfMessagesVisible \
+  --dimensions Name=QueueName,Value=$QUEUE_NAME \
+  --start-time $(date -u -v-1H +%Y-%m-%dT%H:%M:%SZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  --period 300 \
+  --statistics Average
+```
+
+**Status**: [x] Complete
+
+---
+
+## Phase 5 — COMPLETE ✓
+
+All concurrency & scaling steps finished:
+- [x] 5.1 — Race handling proven
+- [x] 5.2 — Worker ID + zerolog logging
+- [x] 5.3 — Batch size flag (1-10)
+- [x] 5.4 — Visibility timeout (30s)
+- [x] 5.5 — CloudWatch metrics observed
+
+---
+
+## Current Step
+→ **6.1 — Create cleanup CLI tool** (ready to test)
+
+---
+
+# Phase 6 Plan — Lambda Crawler + Cleanup Tool
+
+## Goal
+Run the crawler as AWS Lambda triggered by SQS. Add cleanup tool for testing.
+
+## Architecture
+```
+Producer → SQS → Lambda (auto-triggered) → DynamoDB
+                    ↓
+                HTTP fetch
+```
+
+---
+
+## Steps
+
+### Step 6.1 — Create cleanup CLI tool
+**What**: CLI to purge SQS queue and clear DynamoDB table.
+**Why**: Fresh state for testing.
+**How**: New `tools/cleanup/main.go`
+
+**Usage**:
+```bash
+cd tools/cleanup
+go run . --all        # Purge queue + clear table
+go run . --queue      # Purge queue only
+go run . --table      # Clear table only
+```
+
+**Status**: [ ] Ready to test
+
+---
+
+### Step 6.2 — Create Lambda handler
+**What**: Lambda function that receives SQS events and fetches URLs.
+**Why**: Serverless, auto-scaling, pay-per-use.
+**How**: New `lambda/main.go` with SQS event handler.
 
 **Status**: [ ] Not started
 
 ---
 
-## Current Step
-→ **5.4 — Tune visibility timeout** (next)
+### Step 6.3 — Add Lambda to CDK
+**What**: Define Lambda function in CDK with SQS trigger.
+**Why**: Infrastructure as code.
+**How**: Update `cdk/cdk-test.go`
+
+**Status**: [ ] Not started
+
+---
+
+### Step 6.4 — Deploy and test
+**What**: Deploy Lambda, enqueue URLs, verify processing.
+**Why**: End-to-end validation.
+**How**: `cdk deploy`, then use producer + check DynamoDB.
+
+**Status**: [ ] Not started
+
+---
+
+## Notes
+- Lambda timeout: 30s (> 10s HTTP timeout + buffer)
+- Lambda memory: 128MB
+- SQS triggers Lambda automatically (no polling code needed)
+- Consumer CLI remains for local testing if needed
 
 ## Notes
 - Don't add complexity until current step is proven
