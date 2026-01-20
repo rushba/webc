@@ -5,6 +5,8 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 
@@ -36,7 +38,7 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	// Main URL frontier queue
 	queue := awssqs.NewQueue(stack, jsii.String("UrlFrontierQueue"), &awssqs.QueueProps{
-		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(30)),
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(60)), // Must be >= Lambda timeout
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           dlq,
 			MaxReceiveCount: jsii.Number(5),
@@ -54,6 +56,29 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		TimeToLiveAttribute: jsii.String("expires_at"),
 	})
 
+	// Lambda function for crawling
+	crawlerLambda := awslambda.NewFunction(stack, jsii.String("CrawlerLambda"), &awslambda.FunctionProps{
+		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
+		Handler:      jsii.String("bootstrap"),
+		Code:         awslambda.Code_FromAsset(jsii.String("../lambda/bootstrap.zip"), nil),
+		MemorySize:   jsii.Number(128),
+		Timeout:      awscdk.Duration_Seconds(jsii.Number(30)),
+		Architecture: awslambda.Architecture_ARM_64(),
+		Environment: &map[string]*string{
+			"TABLE_NAME": table.TableName(),
+		},
+	})
+
+	// Grant Lambda permissions
+	table.GrantReadWriteData(crawlerLambda)
+
+	// Add SQS trigger
+	crawlerLambda.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
+		BatchSize:         jsii.Number(10),
+		MaxBatchingWindow: awscdk.Duration_Seconds(jsii.Number(5)),
+	}))
+
+	// Tags
 	awscdk.Tags_Of(queue).Add(jsii.String("Component"), jsii.String("crawler-frontier"), nil)
 	awscdk.Tags_Of(queue).Add(jsii.String("Purpose"), jsii.String("url-ingestion"), nil)
 
@@ -63,6 +88,10 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 	awscdk.Tags_Of(table).Add(jsii.String("Component"), jsii.String("crawler-frontier"), nil)
 	awscdk.Tags_Of(table).Add(jsii.String("Purpose"), jsii.String("url-dedup-state"), nil)
 
+	awscdk.Tags_Of(crawlerLambda).Add(jsii.String("Component"), jsii.String("crawler"), nil)
+	awscdk.Tags_Of(crawlerLambda).Add(jsii.String("Purpose"), jsii.String("url-fetcher"), nil)
+
+	// Outputs
 	awscdk.NewCfnOutput(stack, jsii.String("UrlFrontierQueueUrl"), &awscdk.CfnOutputProps{
 		Value: queue.QueueUrl(),
 	})
@@ -73,6 +102,10 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	awscdk.NewCfnOutput(stack, jsii.String("UrlStateTableName"), &awscdk.CfnOutputProps{
 		Value: table.TableName(),
+	})
+
+	awscdk.NewCfnOutput(stack, jsii.String("CrawlerLambdaName"), &awscdk.CfnOutputProps{
+		Value: crawlerLambda.FunctionName(),
 	})
 
 	return stack
@@ -95,29 +128,8 @@ func main() {
 // env determines the AWS environment (account+region) in which our stack is to
 // be deployed. For more information see: https://docs.aws.amazon.com/cdk/latest/guide/environments.html
 func env() *awscdk.Environment {
-	// If unspecified, this stack will be "environment-agnostic".
-	// Account/Region-dependent features and context lookups will not work, but a
-	// single synthesized template can be deployed anywhere.
-	//---------------------------------------------------------------------------
 	return &awscdk.Environment{
 		Account: jsii.String(os.Getenv("CDK_DEFAULT_ACCOUNT")),
 		Region:  jsii.String(os.Getenv("CDK_DEFAULT_REGION")),
 	}
-
-	// Uncomment if you know exactly what account and region you want to deploy
-	// the stack to. This is the recommendation for production stacks.
-	//---------------------------------------------------------------------------
-	// return &awscdk.Environment{
-	//  Account: jsii.String("123456789012"),
-	//  Region:  jsii.String("us-east-1"),
-	// }
-
-	// Uncomment to specialize this stack for the AWS Account and Region that are
-	// implied by the current CLI configuration. This is recommended for dev
-	// stacks.
-	//---------------------------------------------------------------------------
-	// return &awscdk.Environment{
-	//  Account: jsii.String(os.Getenv("CDK_DEFAULT_ACCOUNT")),
-	//  Region:  jsii.String(os.Getenv("CDK_DEFAULT_REGION")),
-	// }
 }

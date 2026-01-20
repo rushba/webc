@@ -181,7 +181,7 @@ lambda/
 └── go.mod
 ```
 
-**Status**: [ ] Ready to verify (go build)
+**Status**: [x] Complete
 
 ---
 
@@ -190,7 +190,25 @@ lambda/
 **Why**: Infrastructure as code.
 **How**: Update `cdk/cdk-test.go`
 
-**Status**: [ ] Not started
+**Changes**:
+- Added `awslambda.NewFunction` with:
+  - Runtime: `PROVIDED_AL2023` (custom Go binary)
+  - Architecture: `ARM64` (cheaper)
+  - Memory: 128MB
+  - Timeout: 30s
+  - Environment: `TABLE_NAME`
+- Added SQS event source trigger (batch size 10)
+- Granted DynamoDB read/write permissions
+- Increased queue visibility timeout to 60s (must be >= Lambda timeout)
+
+**Build Lambda first**:
+```bash
+cd lambda
+chmod +x build.sh
+./build.sh
+```
+
+**Status**: [ ] Ready to test (cdk diff)
 
 ---
 

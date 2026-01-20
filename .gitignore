@@ -19,3 +19,5 @@
 cdk.out
 
 .env
+lambda/bootstrap
+lambda/bootstrap.zip
