@@ -132,7 +132,7 @@ All concurrency & scaling steps finished:
 ---
 
 ## Current Step
-→ **6.1 — Create cleanup CLI tool** (ready to test)
+→ **6.2 — Create Lambda handler** (ready to test locally)
 
 ---
 
@@ -165,7 +165,7 @@ go run . --queue      # Purge queue only
 go run . --table      # Clear table only
 ```
 
-**Status**: [ ] Ready to test
+**Status**: [x] Complete
 
 ---
 
@@ -174,7 +174,14 @@ go run . --table      # Clear table only
 **Why**: Serverless, auto-scaling, pay-per-use.
 **How**: New `lambda/main.go` with SQS event handler.
 
-**Status**: [ ] Not started
+**Files**:
+```
+lambda/
+├── main.go
+└── go.mod
+```
+
+**Status**: [ ] Ready to verify (go build)
 
 ---
 
