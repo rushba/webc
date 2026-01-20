@@ -5,4 +5,5 @@ use (
 	./consumer
 	./lambda
 	./producer
+	./tools/cleanup
 )
