@@ -66,11 +66,13 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		Architecture: awslambda.Architecture_ARM_64(),
 		Environment: &map[string]*string{
 			"TABLE_NAME": table.TableName(),
+			"QUEUE_URL":  queue.QueueUrl(),
 		},
 	})
 
 	// Grant Lambda permissions
 	table.GrantReadWriteData(crawlerLambda)
+	queue.GrantSendMessages(crawlerLambda) // Allow Lambda to enqueue discovered links
 
 	// Add SQS trigger
 	crawlerLambda.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{

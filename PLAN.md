@@ -131,8 +131,114 @@ All concurrency & scaling steps finished:
 
 ---
 
+## Phase 6 — COMPLETE ✓
+
+All Lambda crawler steps finished:
+- [x] 6.1 — Cleanup CLI tool
+- [x] 6.2 — Lambda handler created
+- [x] 6.3 — Lambda added to CDK
+- [x] 6.4 — Deployed and tested (end-to-end working)
+
+---
+
+## Phase 7 — COMPLETE ✓
+
+Core crawling functionality working:
+- [x] 7.1 — Link extraction (golang.org/x/net/html)
+- [x] 7.2 — SQS send permission granted
+- [x] 7.3 — Dedup + enqueue logic
+- [ ] 7.4 — Depth limiting (optional, skipped)
+- [x] 7.5 — End-to-end test (1,115 pages crawled)
+
+---
+
 ## Current Step
-→ **6.2 — Create Lambda handler** (ready to test locally)
+→ **Phase 8** — Ready for next phase
+
+---
+
+# Phase 7 Plan — Link Extraction (Actual Crawling)
+
+## Goal
+Extract links from fetched pages and feed them back to the queue. Turn the fetcher into a real crawler.
+
+## Architecture
+```
+Producer → SQS → Lambda → HTTP fetch → Parse HTML → Extract links
+              ↑                                          ↓
+              └──────────── New URLs (deduplicated) ─────┘
+```
+
+---
+
+## Steps
+
+### Step 7.1 — Add link extraction to Lambda
+**What**: Parse HTML response, extract `<a href>` links.
+**Why**: Discover new URLs to crawl.
+**How**: Use `golang.org/x/net/html` to parse and extract links.
+
+**Changes to `lambda/main.go`**:
+- Add `extractLinks(body []byte, baseURL string) []string`
+- Normalize relative URLs to absolute
+- Filter: same-domain only, skip fragments/javascript/mailto
+
+**Status**: [x] Complete — 73 links extracted from books.toscrape.com test
+
+---
+
+### Step 7.2 — Grant Lambda SQS send permission
+**What**: Allow Lambda to send messages to the queue.
+**Why**: Lambda needs to enqueue discovered links.
+**How**: Update CDK to grant `queue.GrantSendMessages(crawlerLambda)`
+
+**Status**: [x] Complete
+
+---
+
+### Step 7.3 — Add dedup + enqueue logic to Lambda
+**What**: For each extracted link, check DynamoDB and enqueue if new.
+**Why**: Avoid re-crawling known URLs.
+**How**: Same pattern as producer - conditional PutItem, then SendMessage.
+
+**New Lambda env vars**:
+- `QUEUE_URL` (already have `TABLE_NAME`)
+
+**Status**: [x] Complete — tested with books.toscrape.com, discovered 1000+ pages
+
+---
+
+### Step 7.4 — Add crawl depth limiting
+**What**: Track crawl depth, stop at max depth.
+**Why**: Prevent infinite crawling on large sites.
+**How**: 
+- Add `depth` field to DynamoDB item
+- Pass depth in SQS message attributes
+- Stop extracting links when depth >= MAX_DEPTH
+
+**Status**: [ ] Optional — not needed for small sites
+
+---
+
+### Step 7.5 — Test end-to-end crawl
+**What**: Seed with one URL, verify it discovers and crawls linked pages.
+**Why**: Prove the crawler works.
+**How**: Use a site with known link structure (e.g., `books.toscrape.com`)
+
+**Results**:
+- Seeded: `https://books.toscrape.com/`
+- Discovered: **1,115 pages**
+- Crawl completed successfully
+
+**Status**: [x] Complete
+
+---
+
+## Notes
+- Start with same-domain crawling only (no external links)
+- Respect robots.txt? (future phase)
+- Rate limiting per domain? (future phase)
+- Max URLs per page to extract? (prevent spam pages)
 
 ---
 
@@ -208,7 +314,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-**Status**: [ ] Ready to test (cdk diff)
+**Status**: [x] Complete
 
 ---
 
@@ -217,7 +323,7 @@ chmod +x build.sh
 **Why**: End-to-end validation.
 **How**: `cdk deploy`, then use producer + check DynamoDB.
 
-**Status**: [ ] Not started
+**Status**: [x] Complete — verified working (event source mapping recreated after stuck state)
 
 ---
 

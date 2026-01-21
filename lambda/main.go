@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -16,7 +19,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/zerolog"
+	"golang.org/x/net/html"
 )
 
 const (
@@ -28,8 +33,10 @@ const (
 
 type Crawler struct {
 	ddb        *dynamodb.Client
+	sqs        *sqs.Client
 	httpClient *http.Client
 	tableName  string
+	queueURL   string
 	log        zerolog.Logger
 }
 
@@ -46,8 +53,14 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		log.Fatal().Msg("TABLE_NAME environment variable not set")
 	}
 
+	queueURL := os.Getenv("QUEUE_URL")
+	if queueURL == "" {
+		log.Fatal().Msg("QUEUE_URL environment variable not set")
+	}
+
 	return &Crawler{
 		ddb: dynamodb.NewFromConfig(cfg),
+		sqs: sqs.NewFromConfig(cfg),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -55,6 +68,7 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 			},
 		},
 		tableName: tableName,
+		queueURL:  queueURL,
 		log:       log,
 	}, nil
 }
@@ -154,6 +168,25 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			Int64("bytes", result.ContentLength).
 			Int64("ms", result.DurationMs).
 			Msg("Fetched successfully")
+
+		// Step 4: Extract and enqueue links from HTML pages
+		if isHTML(result.ContentType) && len(result.Body) > 0 {
+			links := extractLinks(result.Body, url)
+			c.log.Info().
+				Str("url", url).
+				Int("links_found", len(links)).
+				Msg("Extracted links")
+
+			// Enqueue discovered links (with deduplication)
+			enqueued := c.enqueueLinks(ctx, links)
+			if enqueued > 0 {
+				c.log.Info().
+					Str("url", url).
+					Int("enqueued", enqueued).
+					Int("skipped", len(links)-enqueued).
+					Msg("Enqueued new links")
+			}
+		}
 	} else {
 		c.log.Warn().
 			Str("url", url).
@@ -178,6 +211,7 @@ type FetchResult struct {
 	ContentType   string
 	DurationMs    int64
 	Error         string
+	Body          []byte // For HTML pages, contains the body for link extraction
 }
 
 func (c *Crawler) fetchURL(ctx context.Context, url string) FetchResult {
@@ -218,15 +252,143 @@ func (c *Crawler) fetchURL(ctx context.Context, url string) FetchResult {
 	}
 
 	success := resp.StatusCode >= 200 && resp.StatusCode < 400
+	contentType := resp.Header.Get("Content-Type")
 
 	return FetchResult{
 		Success:       success,
 		StatusCode:    resp.StatusCode,
 		ContentLength: int64(len(body)),
-		ContentType:   resp.Header.Get("Content-Type"),
+		ContentType:   contentType,
 		DurationMs:    time.Since(start).Milliseconds(),
 		Error:         "",
+		Body:          body,
 	}
+}
+
+// enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
+func (c *Crawler) enqueueLinks(ctx context.Context, links []string) int {
+	enqueued := 0
+
+	for _, link := range links {
+		urlHash := hashURL(link)
+
+		// Try to add to DynamoDB (will fail if already exists)
+		_, err := c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+			TableName: &c.tableName,
+			Item: map[string]types.AttributeValue{
+				"url_hash": &types.AttributeValueMemberS{Value: urlHash},
+				"url":      &types.AttributeValueMemberS{Value: link},
+				"status":   &types.AttributeValueMemberS{Value: stateQueued},
+			},
+			ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
+		})
+
+		if err != nil {
+			// URL already exists - skip
+			continue
+		}
+
+		// New URL - enqueue to SQS
+		_, err = c.sqs.SendMessage(ctx, &sqs.SendMessageInput{
+			QueueUrl:    &c.queueURL,
+			MessageBody: &link,
+		})
+
+		if err != nil {
+			c.log.Error().Err(err).Str("url", link).Msg("Failed to enqueue link")
+			// Note: URL is in DynamoDB as "queued" but not in SQS - orphaned state
+			// Could add cleanup logic here, but keeping simple for now
+			continue
+		}
+
+		enqueued++
+	}
+
+	return enqueued
+}
+
+// isHTML checks if content type indicates HTML
+func isHTML(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
+}
+
+// extractLinks parses HTML and extracts all <a href> links, normalizing them to absolute URLs
+func extractLinks(body []byte, baseURLStr string) []string {
+	baseURL, err := url.Parse(baseURLStr)
+	if err != nil {
+		return nil
+	}
+
+	var links []string
+	seen := make(map[string]bool)
+
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+
+	var traverse func(*html.Node)
+	traverse = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			for _, attr := range n.Attr {
+				if attr.Key == "href" {
+					link := normalizeURL(attr.Val, baseURL)
+					if link != "" && !seen[link] {
+						seen[link] = true
+						links = append(links, link)
+					}
+					break
+				}
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			traverse(child)
+		}
+	}
+	traverse(doc)
+
+	return links
+}
+
+// normalizeURL converts a potentially relative URL to an absolute URL
+// Returns empty string for URLs we don't want to crawl
+func normalizeURL(href string, baseURL *url.URL) string {
+	href = strings.TrimSpace(href)
+
+	// Skip empty, fragments, javascript, mailto, tel, etc.
+	if href == "" ||
+		strings.HasPrefix(href, "#") ||
+		strings.HasPrefix(href, "javascript:") ||
+		strings.HasPrefix(href, "mailto:") ||
+		strings.HasPrefix(href, "tel:") ||
+		strings.HasPrefix(href, "data:") {
+		return ""
+	}
+
+	// Parse the href
+	parsed, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+
+	// Resolve relative URLs against base
+	resolved := baseURL.ResolveReference(parsed)
+
+	// Only keep http/https
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return ""
+	}
+
+	// Remove fragment
+	resolved.Fragment = ""
+
+	// Same-domain filter: only crawl links on the same host
+	if resolved.Host != baseURL.Host {
+		return ""
+	}
+
+	return resolved.String()
 }
 
 func main() {
