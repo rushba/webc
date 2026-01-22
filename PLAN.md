@@ -153,7 +153,74 @@ Core crawling functionality working:
 ---
 
 ## Current Step
-→ **Phase 8** — Ready for next phase
+→ **8.1 — Add robots.txt parsing library**
+
+---
+
+# Phase 8 Plan — Robots.txt Support
+
+## Goal
+Respect robots.txt rules to be a polite crawler.
+
+## How it works
+```
+1. Before crawling a URL, fetch robots.txt for that domain
+2. Parse the rules for our User-Agent
+3. Check if the URL path is allowed
+4. Skip disallowed URLs (mark as "skipped" in DynamoDB)
+5. Cache robots.txt per domain to avoid repeated fetches
+```
+
+---
+
+## Steps
+
+### Step 8.1 — Add robots.txt parsing
+**What**: Add a library to parse robots.txt files.
+**Why**: Need to understand Allow/Disallow rules.
+**How**: Use `github.com/temoto/robotstxt` package.
+
+**Status**: [x] Complete
+
+---
+
+### Step 8.2 — Fetch and cache robots.txt
+**What**: Before crawling, fetch robots.txt for the domain.
+**Why**: Need the rules before checking URLs.
+**How**: 
+- In-memory cache per Lambda invocation
+- Handle 404 gracefully (allow all)
+- 512KB max size limit
+
+**Status**: [x] Complete
+
+---
+
+### Step 8.3 — Check URL before crawling
+**What**: Skip URLs that are disallowed by robots.txt.
+**Why**: Respect site owner's wishes.
+**How**:
+- Before fetching, check if URL is allowed
+- If disallowed, mark status as "robots_blocked" in DynamoDB
+- Don't extract links from blocked pages
+
+**Status**: [x] Complete
+
+---
+
+### Step 8.4 — Test with real sites
+**What**: Verify robots.txt is respected.
+**Why**: Ensure it works correctly.
+**How**: Test with sites that have known robots.txt rules.
+
+**Status**: [ ] Not started
+
+---
+
+## Notes
+- User-Agent: "MyCrawler/1.0"
+- Fallback: If robots.txt fetch fails, allow crawling (be lenient)
+- Crawl-delay: Could implement in future phase
 
 ---
 

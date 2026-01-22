@@ -22,26 +22,30 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/rs/zerolog"
+	"github.com/temoto/robotstxt"
 	"golang.org/x/net/html"
 )
 
 const (
-	stateQueued     = "queued"
-	stateProcessing = "processing"
-	stateDone       = "done"
-	stateFailed     = "failed"
+	stateQueued        = "queued"
+	stateProcessing    = "processing"
+	stateDone          = "done"
+	stateFailed        = "failed"
+	stateRobotsBlocked = "robots_blocked"
 
 	defaultMaxDepth = 3 // Default max crawl depth
+	robotsUserAgent = "MyCrawler"
 )
 
 type Crawler struct {
-	ddb        *dynamodb.Client
-	sqs        *sqs.Client
-	httpClient *http.Client
-	tableName  string
-	queueURL   string
-	maxDepth   int
-	log        zerolog.Logger
+	ddb         *dynamodb.Client
+	sqs         *sqs.Client
+	httpClient  *http.Client
+	tableName   string
+	queueURL    string
+	maxDepth    int
+	log         zerolog.Logger
+	robotsCache map[string]*robotstxt.RobotsData // Cache robots.txt per domain
 }
 
 func NewCrawler(ctx context.Context) (*Crawler, error) {
@@ -79,10 +83,11 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		tableName: tableName,
-		queueURL:  queueURL,
-		maxDepth:  maxDepth,
-		log:       log,
+		tableName:   tableName,
+		queueURL:    queueURL,
+		maxDepth:    maxDepth,
+		log:         log,
+		robotsCache: make(map[string]*robotstxt.RobotsData),
 	}, nil
 }
 
@@ -138,9 +143,30 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 		return nil
 	}
 
-	c.log.Info().Str("url", url).Msg("WON race — fetching")
+	c.log.Info().Str("url", url).Msg("WON race — checking robots.txt")
 
-	// Step 2: Fetch the URL
+	// Step 2: Check robots.txt
+	if !c.isAllowedByRobots(ctx, url) {
+		c.log.Info().Str("url", url).Msg("Blocked by robots.txt")
+		// Update status to robots_blocked
+		_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: &c.tableName,
+			Key: map[string]dynamodbtypes.AttributeValue{
+				"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+			},
+			UpdateExpression: aws.String("SET #s = :status, finished_at = :now"),
+			ExpressionAttributeNames: map[string]string{
+				"#s": "status",
+			},
+			ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+				":status": &dynamodbtypes.AttributeValueMemberS{Value: stateRobotsBlocked},
+				":now":    &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+			},
+		})
+		return err
+	}
+
+	// Step 3: Fetch the URL
 	result := c.fetchURL(ctx, url)
 
 	// Step 3: Update status based on fetch result
@@ -425,6 +451,79 @@ func normalizeURL(href string, baseURL *url.URL) string {
 	}
 
 	return resolved.String()
+}
+
+// getRobots fetches and caches robots.txt for a domain
+func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.RobotsData {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return nil
+	}
+
+	domain := parsed.Scheme + "://" + parsed.Host
+
+	// Check cache first
+	if robots, ok := c.robotsCache[domain]; ok {
+		return robots
+	}
+
+	// Fetch robots.txt
+	robotsURL := domain + "/robots.txt"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL, nil)
+	if err != nil {
+		c.robotsCache[domain] = nil // Cache the failure
+		return nil
+	}
+	req.Header.Set("User-Agent", robotsUserAgent+"/1.0")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.log.Debug().Str("domain", domain).Err(err).Msg("Failed to fetch robots.txt")
+		c.robotsCache[domain] = nil
+		return nil
+	}
+	defer resp.Body.Close()
+
+	// If not found or error, allow all
+	if resp.StatusCode != http.StatusOK {
+		c.log.Debug().Str("domain", domain).Int("status", resp.StatusCode).Msg("robots.txt not found, allowing all")
+		c.robotsCache[domain] = nil
+		return nil
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB max
+	if err != nil {
+		c.robotsCache[domain] = nil
+		return nil
+	}
+
+	robots, err := robotstxt.FromBytes(body)
+	if err != nil {
+		c.log.Warn().Str("domain", domain).Err(err).Msg("Failed to parse robots.txt")
+		c.robotsCache[domain] = nil
+		return nil
+	}
+
+	c.log.Info().Str("domain", domain).Msg("Loaded robots.txt")
+	c.robotsCache[domain] = robots
+	return robots
+}
+
+// isAllowedByRobots checks if a URL is allowed by robots.txt
+func (c *Crawler) isAllowedByRobots(ctx context.Context, urlStr string) bool {
+	robots := c.getRobots(ctx, urlStr)
+	if robots == nil {
+		// No robots.txt or failed to fetch - allow by default
+		return true
+	}
+
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return true
+	}
+
+	// Check if the path is allowed for our user agent
+	return robots.TestAgent(parsed.Path, robotsUserAgent)
 }
 
 func main() {

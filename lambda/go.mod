@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.53.6
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.21
 	github.com/rs/zerolog v1.34.0
+	github.com/temoto/robotstxt v1.1.2
 	golang.org/x/net v0.49.0
 )
 
