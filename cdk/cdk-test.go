@@ -67,9 +67,10 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		// Allow recursive loop: Lambda → SQS → Lambda is intentional for crawling
 		RecursiveLoop: awslambda.RecursiveLoop_ALLOW,
 		Environment: &map[string]*string{
-			"TABLE_NAME": table.TableName(),
-			"QUEUE_URL":  queue.QueueUrl(),
-			"MAX_DEPTH":  jsii.String("3"), // Limit crawl depth to prevent runaway costs
+			"TABLE_NAME":     table.TableName(),
+			"QUEUE_URL":      queue.QueueUrl(),
+			"MAX_DEPTH":      jsii.String("3"),    // Limit crawl depth to prevent runaway costs
+			"CRAWL_DELAY_MS": jsii.String("1000"), // 1 second delay between requests to same domain
 		},
 	})
 

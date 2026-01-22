@@ -162,8 +162,86 @@ Robots.txt support working:
 
 ---
 
+## Phase 9 — COMPLETE ✓
+
+Rate limiting working:
+- [x] 9.1 — Track last crawl time per domain
+- [x] 9.2 — Check delay before crawling (atomic DynamoDB update)
+- [x] 9.3 — Re-queue with SQS delay
+- [x] 9.4 — Tested with httpbin.org
+
+---
+
 ## Current Step
-→ **Phase 9** — Ready for next phase
+→ **Phase 10** — Ready for next phase
+
+---
+
+# Phase 9 Plan — Rate Limiting
+
+## Goal
+Be polite to servers by adding delays between requests to the same domain.
+
+## Challenge
+Lambda is stateless and runs in parallel. Need to coordinate across invocations.
+
+## Approach
+1. Store `last_crawled_at` per domain in DynamoDB
+2. Before crawling, check if enough time has passed
+3. If too soon, re-queue the message with a delay
+4. Configurable delay via `CRAWL_DELAY_MS` env var (default 1000ms)
+
+---
+
+## Steps
+
+### Step 9.1 — Track last crawl time per domain
+**What**: Store when we last crawled each domain.
+**Why**: Need to know when to allow next request.
+**How**: Store `domain#<url>` keys in existing DynamoDB table.
+
+**Status**: [x] Complete
+
+---
+
+### Step 9.2 — Check delay before crawling
+**What**: Before fetching, verify enough time has passed.
+**Why**: Respect the delay between requests.
+**How**:
+- Atomic conditional PutItem to check and update last_crawled_at
+- If condition fails (too soon), re-queue with delay
+
+**Status**: [x] Complete
+
+---
+
+### Step 9.3 — Re-queue with delay
+**What**: Send message back to queue with visibility delay.
+**Why**: Wait before retrying the URL.
+**How**: Use SQS DelaySeconds (converts CRAWL_DELAY_MS to seconds)
+
+**Status**: [x] Complete
+
+---
+
+### Step 9.4 — Test rate limiting
+**What**: Verify delays are enforced.
+**Why**: Ensure it works correctly.
+
+**Results**:
+- 3 URLs to same domain sent rapidly
+- First: fetched immediately
+- Second & third: "Rate limited, re-queuing"
+- After delay: all completed successfully
+
+**Status**: [x] Complete
+
+---
+
+## Notes
+- Default delay: 1000ms (1 second between requests to same domain)
+- SQS max delay: 900 seconds
+- Could use Crawl-delay from robots.txt in future
 
 ---
 

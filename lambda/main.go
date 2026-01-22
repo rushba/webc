@@ -33,19 +33,22 @@ const (
 	stateFailed        = "failed"
 	stateRobotsBlocked = "robots_blocked"
 
-	defaultMaxDepth = 3 // Default max crawl depth
-	robotsUserAgent = "MyCrawler"
+	defaultMaxDepth    = 3    // Default max crawl depth
+	defaultCrawlDelay  = 1000 // Default delay between requests to same domain (ms)
+	robotsUserAgent    = "MyCrawler"
+	domainKeyPrefix    = "domain#" // Prefix for domain rate limit keys in DynamoDB
 )
 
 type Crawler struct {
-	ddb         *dynamodb.Client
-	sqs         *sqs.Client
-	httpClient  *http.Client
-	tableName   string
-	queueURL    string
-	maxDepth    int
-	log         zerolog.Logger
-	robotsCache map[string]*robotstxt.RobotsData // Cache robots.txt per domain
+	ddb          *dynamodb.Client
+	sqs          *sqs.Client
+	httpClient   *http.Client
+	tableName    string
+	queueURL     string
+	maxDepth     int
+	crawlDelayMs int
+	log          zerolog.Logger
+	robotsCache  map[string]*robotstxt.RobotsData // Cache robots.txt per domain
 }
 
 func NewCrawler(ctx context.Context) (*Crawler, error) {
@@ -72,7 +75,15 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 			maxDepth = parsed
 		}
 	}
-	log.Info().Int("max_depth", maxDepth).Msg("Crawler initialized")
+
+	crawlDelayMs := defaultCrawlDelay
+	if delayStr := os.Getenv("CRAWL_DELAY_MS"); delayStr != "" {
+		if parsed, err := strconv.Atoi(delayStr); err == nil && parsed >= 0 {
+			crawlDelayMs = parsed
+		}
+	}
+
+	log.Info().Int("max_depth", maxDepth).Int("crawl_delay_ms", crawlDelayMs).Msg("Crawler initialized")
 
 	return &Crawler{
 		ddb: dynamodb.NewFromConfig(cfg),
@@ -83,11 +94,12 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		tableName:   tableName,
-		queueURL:    queueURL,
-		maxDepth:    maxDepth,
-		log:         log,
-		robotsCache: make(map[string]*robotstxt.RobotsData),
+		tableName:    tableName,
+		queueURL:     queueURL,
+		maxDepth:     maxDepth,
+		crawlDelayMs: crawlDelayMs,
+		log:          log,
+		robotsCache:  make(map[string]*robotstxt.RobotsData),
 	}, nil
 }
 
@@ -166,7 +178,33 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 		return err
 	}
 
-	// Step 3: Fetch the URL
+	// Step 3: Check rate limit
+	domain := getDomain(url)
+	if !c.checkRateLimit(ctx, domain) {
+		c.log.Info().Str("url", url).Str("domain", domain).Msg("Rate limited, re-queuing")
+		// Reset status back to queued
+		_, _ = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+			TableName: &c.tableName,
+			Key: map[string]dynamodbtypes.AttributeValue{
+				"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+			},
+			UpdateExpression: aws.String("SET #s = :queued"),
+			ExpressionAttributeNames: map[string]string{
+				"#s": "status",
+			},
+			ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+				":queued": &dynamodbtypes.AttributeValueMemberS{Value: stateQueued},
+			},
+		})
+		// Re-queue with delay (convert ms to seconds, minimum 1 second)
+		delaySeconds := c.crawlDelayMs / 1000
+		if delaySeconds < 1 {
+			delaySeconds = 1
+		}
+		return c.requeueWithDelay(ctx, url, depth, delaySeconds)
+	}
+
+	// Step 4: Fetch the URL
 	result := c.fetchURL(ctx, url)
 
 	// Step 3: Update status based on fetch result
@@ -524,6 +562,76 @@ func (c *Crawler) isAllowedByRobots(ctx context.Context, urlStr string) bool {
 
 	// Check if the path is allowed for our user agent
 	return robots.TestAgent(parsed.Path, robotsUserAgent)
+}
+
+// getDomain extracts the domain (scheme + host) from a URL
+func getDomain(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// checkRateLimit checks if we can crawl the domain (enough time since last crawl)
+// Returns true if allowed, false if rate limited
+func (c *Crawler) checkRateLimit(ctx context.Context, domain string) bool {
+	if c.crawlDelayMs <= 0 {
+		return true // No rate limiting
+	}
+
+	domainKey := domainKeyPrefix + domain
+	now := time.Now().UnixMilli()
+	nowStr := strconv.FormatInt(now, 10)
+	minTime := now - int64(c.crawlDelayMs)
+	minTimeStr := strconv.FormatInt(minTime, 10)
+
+	// Try to update last_crawled_at with condition: either doesn't exist or is old enough
+	_, err := c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &c.tableName,
+		Item: map[string]dynamodbtypes.AttributeValue{
+			"url_hash":        &dynamodbtypes.AttributeValueMemberS{Value: domainKey},
+			"last_crawled_at": &dynamodbtypes.AttributeValueMemberN{Value: nowStr},
+			"domain":          &dynamodbtypes.AttributeValueMemberS{Value: domain},
+		},
+		// Only succeed if: key doesn't exist OR last_crawled_at < minTime
+		ConditionExpression: aws.String("attribute_not_exists(url_hash) OR last_crawled_at < :min_time"),
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":min_time": &dynamodbtypes.AttributeValueMemberN{Value: minTimeStr},
+		},
+	})
+
+	if err != nil {
+		// Condition failed = rate limited
+		c.log.Debug().Str("domain", domain).Int("delay_ms", c.crawlDelayMs).Msg("Rate limited")
+		return false
+	}
+
+	return true
+}
+
+// requeueWithDelay sends the URL back to the queue with a delay
+func (c *Crawler) requeueWithDelay(ctx context.Context, urlStr string, depth int, delaySeconds int) error {
+	depthStr := strconv.Itoa(depth)
+
+	// Cap delay at SQS max (900 seconds = 15 minutes)
+	if delaySeconds > 900 {
+		delaySeconds = 900
+	}
+
+	_, err := c.sqs.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl:     &c.queueURL,
+		MessageBody:  &urlStr,
+		DelaySeconds: int32(delaySeconds),
+		MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+			"depth": {
+				DataType:    aws.String("Number"),
+				StringValue: &depthStr,
+			},
+		},
+	})
+
+	return err
 }
 
 func main() {
