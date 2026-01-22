@@ -18,8 +18,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/rs/zerolog"
 	"golang.org/x/net/html"
 )
@@ -114,8 +115,8 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 	// Step 1: queued → processing (idempotent gate)
 	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
-		Key: map[string]types.AttributeValue{
-			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
 		},
 		UpdateExpression: aws.String(
 			"SET #s = :processing, processing_at = :now ADD attempts :one",
@@ -124,11 +125,11 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 		ExpressionAttributeNames: map[string]string{
 			"#s": "status",
 		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":queued":     &types.AttributeValueMemberS{Value: stateQueued},
-			":processing": &types.AttributeValueMemberS{Value: stateProcessing},
-			":now":        &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-			":one":        &types.AttributeValueMemberN{Value: "1"},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":queued":     &dynamodbtypes.AttributeValueMemberS{Value: stateQueued},
+			":processing": &dynamodbtypes.AttributeValueMemberS{Value: stateProcessing},
+			":now":        &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+			":one":        &dynamodbtypes.AttributeValueMemberN{Value: "1"},
 		},
 	})
 
@@ -155,8 +156,8 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 
 	_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
-		Key: map[string]types.AttributeValue{
-			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
 		},
 		UpdateExpression: aws.String(
 			"SET #s = :status, finished_at = :now, expires_at = :ttl, http_status = :http_status, content_length = :content_length, content_type = :content_type, fetch_duration_ms = :duration, fetch_error = :error, crawl_depth = :depth",
@@ -164,16 +165,16 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 		ExpressionAttributeNames: map[string]string{
 			"#s": "status",
 		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":status":         &types.AttributeValueMemberS{Value: finalStatus},
-			":now":            &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-			":ttl":            &types.AttributeValueMemberN{Value: ttlStr},
-			":http_status":    &types.AttributeValueMemberN{Value: strconv.Itoa(result.StatusCode)},
-			":content_length": &types.AttributeValueMemberN{Value: strconv.FormatInt(result.ContentLength, 10)},
-			":content_type":   &types.AttributeValueMemberS{Value: result.ContentType},
-			":duration":       &types.AttributeValueMemberN{Value: strconv.FormatInt(result.DurationMs, 10)},
-			":error":          &types.AttributeValueMemberS{Value: result.Error},
-			":depth":          &types.AttributeValueMemberN{Value: strconv.Itoa(depth)},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":status":         &dynamodbtypes.AttributeValueMemberS{Value: finalStatus},
+			":now":            &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+			":ttl":            &dynamodbtypes.AttributeValueMemberN{Value: ttlStr},
+			":http_status":    &dynamodbtypes.AttributeValueMemberN{Value: strconv.Itoa(result.StatusCode)},
+			":content_length": &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(result.ContentLength, 10)},
+			":content_type":   &dynamodbtypes.AttributeValueMemberS{Value: result.ContentType},
+			":duration":       &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(result.DurationMs, 10)},
+			":error":          &dynamodbtypes.AttributeValueMemberS{Value: result.Error},
+			":depth":          &dynamodbtypes.AttributeValueMemberN{Value: strconv.Itoa(depth)},
 		},
 	})
 
@@ -190,21 +191,28 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			Int64("ms", result.DurationMs).
 			Msg("Fetched successfully")
 
-		// Step 4: Extract and enqueue links from HTML pages
-		if isHTML(result.ContentType) && len(result.Body) > 0 {
+		// Step 4: Extract and enqueue links from HTML pages (if not at max depth)
+		if depth >= c.maxDepth {
+			c.log.Info().
+				Str("url", url).
+				Int("depth", depth).
+				Int("max_depth", c.maxDepth).
+				Msg("Max depth reached, not extracting links")
+		} else if isHTML(result.ContentType) && len(result.Body) > 0 {
 			links := extractLinks(result.Body, url)
 			c.log.Info().
 				Str("url", url).
 				Int("links_found", len(links)).
 				Msg("Extracted links")
 
-			// Enqueue discovered links (with deduplication)
-			enqueued := c.enqueueLinks(ctx, links)
+			// Enqueue discovered links (with deduplication) at depth+1
+			enqueued := c.enqueueLinks(ctx, links, depth+1)
 			if enqueued > 0 {
 				c.log.Info().
 					Str("url", url).
 					Int("enqueued", enqueued).
 					Int("skipped", len(links)-enqueued).
+					Int("child_depth", depth+1).
 					Msg("Enqueued new links")
 			}
 		}
@@ -287,8 +295,9 @@ func (c *Crawler) fetchURL(ctx context.Context, url string) FetchResult {
 }
 
 // enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
-func (c *Crawler) enqueueLinks(ctx context.Context, links []string) int {
+func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) int {
 	enqueued := 0
+	depthStr := strconv.Itoa(depth)
 
 	for _, link := range links {
 		urlHash := hashURL(link)
@@ -296,10 +305,10 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string) int {
 		// Try to add to DynamoDB (will fail if already exists)
 		_, err := c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
 			TableName: &c.tableName,
-			Item: map[string]types.AttributeValue{
-				"url_hash": &types.AttributeValueMemberS{Value: urlHash},
-				"url":      &types.AttributeValueMemberS{Value: link},
-				"status":   &types.AttributeValueMemberS{Value: stateQueued},
+			Item: map[string]dynamodbtypes.AttributeValue{
+				"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+				"url":      &dynamodbtypes.AttributeValueMemberS{Value: link},
+				"status":   &dynamodbtypes.AttributeValueMemberS{Value: stateQueued},
 			},
 			ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
 		})
@@ -309,10 +318,16 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string) int {
 			continue
 		}
 
-		// New URL - enqueue to SQS
+		// New URL - enqueue to SQS with depth attribute
 		_, err = c.sqs.SendMessage(ctx, &sqs.SendMessageInput{
 			QueueUrl:    &c.queueURL,
 			MessageBody: &link,
+			MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+				"depth": {
+					DataType:    aws.String("Number"),
+					StringValue: &depthStr,
+				},
+			},
 		})
 
 		if err != nil {

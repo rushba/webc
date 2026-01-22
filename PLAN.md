@@ -147,13 +147,13 @@ Core crawling functionality working:
 - [x] 7.1 — Link extraction (golang.org/x/net/html)
 - [x] 7.2 — SQS send permission granted
 - [x] 7.3 — Dedup + enqueue logic
-- [ ] 7.4 — Depth limiting (optional, skipped)
-- [x] 7.5 — End-to-end test (1,115 pages crawled)
+- [x] 7.4 — Depth limiting (MAX_DEPTH=3, recursive loop allowed)
+- [x] 7.5 — End-to-end test (800 pages with depth limit)
 
 ---
 
 ## Current Step
-→ **7.4 — Add crawl depth limiting**
+→ **Phase 8** — Ready for next phase
 
 ---
 
@@ -210,13 +210,18 @@ Producer → SQS → Lambda → HTTP fetch → Parse HTML → Extract links
 
 ### Step 7.4 — Add crawl depth limiting
 **What**: Track crawl depth, stop at max depth.
-**Why**: Prevent infinite crawling on large sites.
+**Why**: Prevent infinite crawling and runaway costs.
 **How**: 
 - Add `depth` field to DynamoDB item
 - Pass depth in SQS message attributes
 - Stop extracting links when depth >= MAX_DEPTH
+- Disable AWS recursive loop detection (intentional pattern)
 
-**Status**: [ ] Optional — not needed for small sites
+**Results**:
+- MAX_DEPTH=3: Crawled 800 pages (vs 1,115 unlimited)
+- Logs show "Max depth reached, not extracting links"
+
+**Status**: [x] Complete
 
 ---
 

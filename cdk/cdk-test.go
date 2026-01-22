@@ -64,9 +64,12 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		MemorySize:   jsii.Number(128),
 		Timeout:      awscdk.Duration_Seconds(jsii.Number(30)),
 		Architecture: awslambda.Architecture_ARM_64(),
+		// Allow recursive loop: Lambda → SQS → Lambda is intentional for crawling
+		RecursiveLoop: awslambda.RecursiveLoop_ALLOW,
 		Environment: &map[string]*string{
 			"TABLE_NAME": table.TableName(),
 			"QUEUE_URL":  queue.QueueUrl(),
+			"MAX_DEPTH":  jsii.String("3"), // Limit crawl depth to prevent runaway costs
 		},
 	})
 
