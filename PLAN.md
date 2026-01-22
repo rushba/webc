@@ -152,8 +152,18 @@ Core crawling functionality working:
 
 ---
 
+## Phase 8 — COMPLETE ✓
+
+Robots.txt support working:
+- [x] 8.1 — Add robotstxt library
+- [x] 8.2 — Fetch and cache robots.txt
+- [x] 8.3 — Check URL before crawling
+- [x] 8.4 — Tested with httpbin.org
+
+---
+
 ## Current Step
-→ **8.1 — Add robots.txt parsing library**
+→ **Phase 9** — Ready for next phase
 
 ---
 
@@ -213,7 +223,11 @@ Respect robots.txt rules to be a polite crawler.
 **Why**: Ensure it works correctly.
 **How**: Test with sites that have known robots.txt rules.
 
-**Status**: [ ] Not started
+**Results**:
+- httpbin.org/deny → `robots_blocked` ✓
+- httpbin.org/get → `done` ✓
+
+**Status**: [x] Complete
 
 ---
 
