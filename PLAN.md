@@ -153,7 +153,7 @@ Core crawling functionality working:
 ---
 
 ## Current Step
-→ **Phase 8** — Ready for next phase
+→ **7.4 — Add crawl depth limiting**
 
 ---
 

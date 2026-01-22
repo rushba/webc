@@ -29,6 +29,8 @@ const (
 	stateProcessing = "processing"
 	stateDone       = "done"
 	stateFailed     = "failed"
+
+	defaultMaxDepth = 3 // Default max crawl depth
 )
 
 type Crawler struct {
@@ -37,6 +39,7 @@ type Crawler struct {
 	httpClient *http.Client
 	tableName  string
 	queueURL   string
+	maxDepth   int
 	log        zerolog.Logger
 }
 
@@ -58,6 +61,14 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		log.Fatal().Msg("QUEUE_URL environment variable not set")
 	}
 
+	maxDepth := defaultMaxDepth
+	if maxDepthStr := os.Getenv("MAX_DEPTH"); maxDepthStr != "" {
+		if parsed, err := strconv.Atoi(maxDepthStr); err == nil && parsed >= 0 {
+			maxDepth = parsed
+		}
+	}
+	log.Info().Int("max_depth", maxDepth).Msg("Crawler initialized")
+
 	return &Crawler{
 		ddb: dynamodb.NewFromConfig(cfg),
 		sqs: sqs.NewFromConfig(cfg),
@@ -69,6 +80,7 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		},
 		tableName: tableName,
 		queueURL:  queueURL,
+		maxDepth:  maxDepth,
 		log:       log,
 	}, nil
 }
@@ -89,7 +101,15 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 	url := record.Body
 	urlHash := hashURL(url)
 
-	c.log.Info().Str("url", url).Msg("Processing")
+	// Extract depth from message attributes (default 0 for seed URLs)
+	depth := 0
+	if depthAttr, ok := record.MessageAttributes["depth"]; ok && depthAttr.StringValue != nil {
+		if parsed, err := strconv.Atoi(*depthAttr.StringValue); err == nil {
+			depth = parsed
+		}
+	}
+
+	c.log.Info().Str("url", url).Int("depth", depth).Msg("Processing")
 
 	// Step 1: queued → processing (idempotent gate)
 	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -139,7 +159,7 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			"url_hash": &types.AttributeValueMemberS{Value: urlHash},
 		},
 		UpdateExpression: aws.String(
-			"SET #s = :status, finished_at = :now, expires_at = :ttl, http_status = :http_status, content_length = :content_length, content_type = :content_type, fetch_duration_ms = :duration, fetch_error = :error",
+			"SET #s = :status, finished_at = :now, expires_at = :ttl, http_status = :http_status, content_length = :content_length, content_type = :content_type, fetch_duration_ms = :duration, fetch_error = :error, crawl_depth = :depth",
 		),
 		ExpressionAttributeNames: map[string]string{
 			"#s": "status",
@@ -153,6 +173,7 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			":content_type":   &types.AttributeValueMemberS{Value: result.ContentType},
 			":duration":       &types.AttributeValueMemberN{Value: strconv.FormatInt(result.DurationMs, 10)},
 			":error":          &types.AttributeValueMemberS{Value: result.Error},
+			":depth":          &types.AttributeValueMemberN{Value: strconv.Itoa(depth)},
 		},
 	})
 
