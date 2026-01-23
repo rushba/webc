@@ -21,3 +21,4 @@ cdk.out
 .env
 lambda/bootstrap
 lambda/bootstrap.zip
+cdk/cdk-test
