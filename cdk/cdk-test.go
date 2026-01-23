@@ -34,6 +34,18 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		AutoDeleteObjects: jsii.Bool(true),
 	})
 
+	// Content storage bucket for crawled pages
+	contentBucket := awss3.NewBucket(stack, jsii.String("ContentBucket"), &awss3.BucketProps{
+		RemovalPolicy:     awscdk.RemovalPolicy_DESTROY,
+		AutoDeleteObjects: jsii.Bool(true),
+		LifecycleRules: &[]*awss3.LifecycleRule{
+			{
+				Expiration: awscdk.Duration_Days(jsii.Number(30)), // Auto-delete after 30 days
+				Enabled:    jsii.Bool(true),
+			},
+		},
+	})
+
 	// Dead-letter queue
 	dlq := awssqs.NewQueue(stack, jsii.String("UrlFrontierDLQ"), &awssqs.QueueProps{
 		RetentionPeriod: awscdk.Duration_Days(jsii.Number(14)),
@@ -72,6 +84,7 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		Environment: &map[string]*string{
 			"TABLE_NAME":     table.TableName(),
 			"QUEUE_URL":      queue.QueueUrl(),
+			"CONTENT_BUCKET": contentBucket.BucketName(),
 			"MAX_DEPTH":      jsii.String("3"),    // Limit crawl depth to prevent runaway costs
 			"CRAWL_DELAY_MS": jsii.String("1000"), // 1 second delay between requests to same domain
 		},
@@ -79,7 +92,8 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	// Grant Lambda permissions
 	table.GrantReadWriteData(crawlerLambda)
-	queue.GrantSendMessages(crawlerLambda) // Allow Lambda to enqueue discovered links
+	queue.GrantSendMessages(crawlerLambda)     // Allow Lambda to enqueue discovered links
+	contentBucket.GrantPut(crawlerLambda, "*") // Allow Lambda to upload content to S3
 
 	// Add SQS trigger
 	crawlerLambda.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
@@ -184,6 +198,60 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		}),
 	)
 
+	// S3 metrics
+	s3BucketSize := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+		Namespace:  jsii.String("AWS/S3"),
+		MetricName: jsii.String("BucketSizeBytes"),
+		DimensionsMap: &map[string]*string{
+			"BucketName":  contentBucket.BucketName(),
+			"StorageType": jsii.String("StandardStorage"),
+		},
+		Period:    awscdk.Duration_Days(jsii.Number(1)), // S3 metrics are daily
+		Statistic: jsii.String("Average"),
+	})
+	s3ObjectCount := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+		Namespace:  jsii.String("AWS/S3"),
+		MetricName: jsii.String("NumberOfObjects"),
+		DimensionsMap: &map[string]*string{
+			"BucketName":  contentBucket.BucketName(),
+			"StorageType": jsii.String("AllStorageTypes"),
+		},
+		Period:    awscdk.Duration_Days(jsii.Number(1)),
+		Statistic: jsii.String("Average"),
+	})
+	s3PutErrors := awscloudwatch.NewMetric(&awscloudwatch.MetricProps{
+		Namespace:  jsii.String("AWS/S3"),
+		MetricName: jsii.String("5xxErrors"),
+		DimensionsMap: &map[string]*string{
+			"BucketName": contentBucket.BucketName(),
+			"FilterId":   jsii.String("AllRequests"),
+		},
+		Period:    awscdk.Duration_Minutes(jsii.Number(5)),
+		Statistic: jsii.String("Sum"),
+	})
+
+	dashboard.AddWidgets(
+		// Row 3: S3 storage
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("S3 Bucket Size (bytes)"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{s3BucketSize},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("S3 Object Count"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{s3ObjectCount},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("S3 Put Errors (5xx)"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{s3PutErrors},
+		}),
+	)
+
 	// Alarms
 	// 1. Lambda errors alarm
 	lambdaErrorsAlarm := awscloudwatch.NewAlarm(stack, jsii.String("LambdaErrorsAlarm"), &awscloudwatch.AlarmProps{
@@ -244,6 +312,10 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	awscdk.NewCfnOutput(stack, jsii.String("AlertTopicArn"), &awscdk.CfnOutputProps{
 		Value: alertTopic.TopicArn(),
+	})
+
+	awscdk.NewCfnOutput(stack, jsii.String("ContentBucketName"), &awscdk.CfnOutputProps{
+		Value: contentBucket.BucketName(),
 	})
 
 	return stack
