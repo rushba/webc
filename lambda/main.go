@@ -451,6 +451,45 @@ func extractLinks(body []byte, baseURLStr string) []string {
 	return links
 }
 
+// extractText parses HTML and extracts visible text content
+func extractText(body []byte) string {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	var extractNode func(*html.Node)
+	extractNode = func(n *html.Node) {
+		// Skip non-visible elements
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "script", "style", "noscript", "head", "meta", "link":
+				return
+			}
+		}
+
+		// Extract text nodes
+		if n.Type == html.TextNode {
+			text := strings.TrimSpace(n.Data)
+			if text != "" {
+				if sb.Len() > 0 {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(text)
+			}
+		}
+
+		// Recurse into children
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			extractNode(child)
+		}
+	}
+	extractNode(doc)
+
+	return sb.String()
+}
+
 // normalizeURL converts a potentially relative URL to an absolute URL
 // Returns empty string for URLs we don't want to crawl
 func normalizeURL(href string, baseURL *url.URL) string {
