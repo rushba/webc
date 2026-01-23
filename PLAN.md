@@ -172,8 +172,63 @@ Rate limiting working:
 
 ---
 
+## Phase 10 — COMPLETE ✓
+
+Monitoring deployed:
+- [x] CloudWatch Dashboard (6 widgets)
+- [x] 3 Alarms → SNS Topic
+- [x] Resources verified
+
+---
+
 ## Current Step
-→ **Phase 10** — Ready for next phase
+→ **Phase 11** — Ready for next phase
+
+---
+
+# Phase 10 Plan — Monitoring
+
+## Goal
+Add CloudWatch dashboard and alerts for visibility into crawler health.
+
+---
+
+## Steps
+
+### Step 10.1 — CloudWatch Dashboard
+**What**: Create dashboard with key metrics.
+**Widgets**:
+- Lambda Invocations & Errors
+- Lambda Duration
+- Concurrent Executions
+- Queue Depth
+- Message Age
+- Dead Letter Queue
+
+**Status**: [x] Complete
+
+---
+
+### Step 10.2 — Error Alerts
+**What**: SNS alerts for failures.
+**Alarms**:
+- Lambda errors > 5 in 2 periods → SNS
+- DLQ messages > 0 → SNS
+- Lambda p95 duration > 25s → SNS
+
+**Status**: [x] Complete
+
+---
+
+### Step 10.3 — Test Monitoring
+**What**: Verify dashboard and alerts work.
+
+**Results**:
+- Dashboard deployed: CrawlerDashboard
+- 3 alarms created, all connected to SNS topic
+- Alarms in INSUFFICIENT_DATA (normal for new alarms)
+
+**Status**: [x] Complete
 
 ---
 

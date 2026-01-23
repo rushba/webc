@@ -4,10 +4,13 @@ import (
 	"os"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatchactions"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambdaeventsources"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awss3"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awssns"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 
 	"github.com/aws/constructs-go/constructs/v10"
@@ -97,6 +100,127 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 	awscdk.Tags_Of(crawlerLambda).Add(jsii.String("Component"), jsii.String("crawler"), nil)
 	awscdk.Tags_Of(crawlerLambda).Add(jsii.String("Purpose"), jsii.String("url-fetcher"), nil)
 
+	// ========== MONITORING ==========
+
+	// SNS Topic for alerts
+	alertTopic := awssns.NewTopic(stack, jsii.String("CrawlerAlerts"), &awssns.TopicProps{
+		DisplayName: jsii.String("Crawler Alerts"),
+	})
+
+	// CloudWatch Dashboard
+	dashboard := awscloudwatch.NewDashboard(stack, jsii.String("CrawlerDashboard"), &awscloudwatch.DashboardProps{
+		DashboardName: jsii.String("CrawlerDashboard"),
+	})
+
+	// Lambda metrics
+	lambdaInvocations := crawlerLambda.MetricInvocations(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+	lambdaErrors := crawlerLambda.MetricErrors(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+	lambdaDuration := crawlerLambda.MetricDuration(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+	lambdaConcurrent := crawlerLambda.Metric(jsii.String("ConcurrentExecutions"), &awscloudwatch.MetricOptions{
+		Period:    awscdk.Duration_Minutes(jsii.Number(1)),
+		Statistic: jsii.String("Maximum"),
+	})
+
+	// SQS metrics
+	queueMessages := queue.MetricApproximateNumberOfMessagesVisible(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+	queueAge := queue.MetricApproximateAgeOfOldestMessage(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+	dlqMessages := dlq.MetricApproximateNumberOfMessagesVisible(&awscloudwatch.MetricOptions{
+		Period: awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+
+	// Dashboard widgets
+	dashboard.AddWidgets(
+		// Row 1: Lambda overview
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Lambda Invocations & Errors"),
+			Width:  jsii.Number(12),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{lambdaInvocations},
+			Right:  &[]awscloudwatch.IMetric{lambdaErrors},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Lambda Duration (ms)"),
+			Width:  jsii.Number(6),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{lambdaDuration},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Concurrent Executions"),
+			Width:  jsii.Number(6),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{lambdaConcurrent},
+		}),
+	)
+
+	dashboard.AddWidgets(
+		// Row 2: Queue health
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Queue Depth"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{queueMessages},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Message Age (seconds)"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{queueAge},
+		}),
+		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+			Title:  jsii.String("Dead Letter Queue"),
+			Width:  jsii.Number(8),
+			Height: jsii.Number(6),
+			Left:   &[]awscloudwatch.IMetric{dlqMessages},
+		}),
+	)
+
+	// Alarms
+	// 1. Lambda errors alarm
+	lambdaErrorsAlarm := awscloudwatch.NewAlarm(stack, jsii.String("LambdaErrorsAlarm"), &awscloudwatch.AlarmProps{
+		AlarmDescription:   jsii.String("Crawler Lambda errors exceeded threshold"),
+		Metric:             lambdaErrors,
+		Threshold:          jsii.Number(5),
+		EvaluationPeriods:  jsii.Number(2),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	lambdaErrorsAlarm.AddAlarmAction(awscloudwatchactions.NewSnsAction(alertTopic))
+
+	// 2. DLQ messages alarm (any message in DLQ is concerning)
+	dlqAlarm := awscloudwatch.NewAlarm(stack, jsii.String("DLQAlarm"), &awscloudwatch.AlarmProps{
+		AlarmDescription:   jsii.String("Messages in Dead Letter Queue"),
+		Metric:             dlqMessages,
+		Threshold:          jsii.Number(0),
+		EvaluationPeriods:  jsii.Number(1),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	dlqAlarm.AddAlarmAction(awscloudwatchactions.NewSnsAction(alertTopic))
+
+	// 3. Lambda duration approaching timeout (>25s when timeout is 30s)
+	durationAlarm := awscloudwatch.NewAlarm(stack, jsii.String("LambdaDurationAlarm"), &awscloudwatch.AlarmProps{
+		AlarmDescription: jsii.String("Lambda duration approaching timeout"),
+		Metric: crawlerLambda.MetricDuration(&awscloudwatch.MetricOptions{
+			Period:    awscdk.Duration_Minutes(jsii.Number(5)),
+			Statistic: jsii.String("p95"),
+		}),
+		Threshold:          jsii.Number(25000), // 25 seconds in ms
+		EvaluationPeriods:  jsii.Number(2),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	durationAlarm.AddAlarmAction(awscloudwatchactions.NewSnsAction(alertTopic))
+
 	// Outputs
 	awscdk.NewCfnOutput(stack, jsii.String("UrlFrontierQueueUrl"), &awscdk.CfnOutputProps{
 		Value: queue.QueueUrl(),
@@ -112,6 +236,14 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	awscdk.NewCfnOutput(stack, jsii.String("CrawlerLambdaName"), &awscdk.CfnOutputProps{
 		Value: crawlerLambda.FunctionName(),
+	})
+
+	awscdk.NewCfnOutput(stack, jsii.String("DashboardName"), &awscdk.CfnOutputProps{
+		Value: dashboard.DashboardName(),
+	})
+
+	awscdk.NewCfnOutput(stack, jsii.String("AlertTopicArn"), &awscdk.CfnOutputProps{
+		Value: alertTopic.TopicArn(),
 	})
 
 	return stack
