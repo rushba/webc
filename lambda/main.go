@@ -129,26 +129,58 @@ func (c *Crawler) Handler(ctx context.Context, sqsEvent events.SQSEvent) error {
 func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) error {
 	url := record.Body
 	urlHash := hashURL(url)
-
-	// Extract depth from message attributes (default 0 for seed URLs)
-	depth := 0
-	if depthAttr, ok := record.MessageAttributes["depth"]; ok && depthAttr.StringValue != nil {
-		if parsed, err := strconv.Atoi(*depthAttr.StringValue); err == nil {
-			depth = parsed
-		}
-	}
+	depth := c.extractDepth(record)
 
 	c.log.Info().Str("url", url).Int("depth", depth).Msg("Processing")
 
-	// Step 1: queued → processing (idempotent gate)
+	if !c.claimURL(ctx, urlHash) {
+		c.log.Warn().Str("url", url).Msg("LOST race — already claimed")
+		return nil
+	}
+	c.log.Info().Str("url", url).Msg("WON race — checking robots.txt")
+
+	if !c.isAllowedByRobots(ctx, url) {
+		c.log.Info().Str("url", url).Msg("Blocked by robots.txt")
+		return c.markStatus(ctx, urlHash, stateRobotsBlocked)
+	}
+
+	if !c.checkRateLimit(ctx, getDomain(url)) {
+		return c.handleRateLimited(ctx, url, urlHash, depth)
+	}
+
+	result := c.fetchURL(ctx, url)
+	if err := c.saveFetchResult(ctx, urlHash, result, depth); err != nil {
+		return err
+	}
+
+	if !result.Success {
+		c.log.Warn().Str("url", url).Int("status", result.StatusCode).Str("error", result.Error).Int64("ms", result.DurationMs).Msg("Fetch failed")
+		return nil
+	}
+
+	c.log.Info().Str("url", url).Int("status", result.StatusCode).Int64("bytes", result.ContentLength).Int64("ms", result.DurationMs).Msg("Fetched successfully")
+	c.processHTMLContent(ctx, url, urlHash, result, depth)
+	return nil
+}
+
+// extractDepth gets crawl depth from SQS message attributes
+func (c *Crawler) extractDepth(record events.SQSMessage) int {
+	if depthAttr, ok := record.MessageAttributes["depth"]; ok && depthAttr.StringValue != nil {
+		if parsed, err := strconv.Atoi(*depthAttr.StringValue); err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// claimURL attempts to transition URL from queued → processing (returns true if won)
+func (c *Crawler) claimURL(ctx context.Context, urlHash string) bool {
 	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
 		Key: map[string]dynamodbtypes.AttributeValue{
 			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
 		},
-		UpdateExpression: aws.String(
-			"SET #s = :processing, processing_at = :now ADD attempts :one",
-		),
+		UpdateExpression:    aws.String("SET #s = :processing, processing_at = :now ADD attempts :one"),
 		ConditionExpression: aws.String("#s = :queued"),
 		ExpressionAttributeNames: map[string]string{
 			"#s": "status",
@@ -160,90 +192,79 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			":one":        &dynamodbtypes.AttributeValueMemberN{Value: "1"},
 		},
 	})
+	return err == nil
+}
 
-	if err != nil {
-		c.log.Warn().Str("url", url).Msg("LOST race — already claimed")
-		return nil
+// markStatus sets a terminal status (robots_blocked, etc.)
+func (c *Crawler) markStatus(ctx context.Context, urlHash, status string) error {
+	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &c.tableName,
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+		},
+		UpdateExpression: aws.String("SET #s = :status, finished_at = :now"),
+		ExpressionAttributeNames: map[string]string{
+			"#s": "status",
+		},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":status": &dynamodbtypes.AttributeValueMemberS{Value: status},
+			":now":    &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+		},
+	})
+	return err
+}
+
+// handleRateLimited resets URL to queued and re-queues with delay
+func (c *Crawler) handleRateLimited(ctx context.Context, url, urlHash string, depth int) error {
+	c.log.Info().Str("url", url).Str("domain", getDomain(url)).Msg("Rate limited, re-queuing")
+
+	// Reset to queued
+	_, _ = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &c.tableName,
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+		},
+		UpdateExpression: aws.String("SET #s = :queued"),
+		ExpressionAttributeNames: map[string]string{
+			"#s": "status",
+		},
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":queued": &dynamodbtypes.AttributeValueMemberS{Value: stateQueued},
+		},
+	})
+
+	delaySeconds := c.crawlDelayMs / 1000
+	if delaySeconds < 1 {
+		delaySeconds = 1
+	}
+	return c.requeueWithDelay(ctx, url, depth, delaySeconds)
+}
+
+// saveFetchResult persists fetch metadata to DynamoDB
+func (c *Crawler) saveFetchResult(ctx context.Context, urlHash string, result FetchResult, depth int) error {
+	status := stateDone
+	if !result.Success {
+		status = stateFailed
 	}
 
-	c.log.Info().Str("url", url).Msg("WON race — checking robots.txt")
-
-	// Step 2: Check robots.txt
-	if !c.isAllowedByRobots(ctx, url) {
-		c.log.Info().Str("url", url).Msg("Blocked by robots.txt")
-		// Update status to robots_blocked
-		_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-			TableName: &c.tableName,
-			Key: map[string]dynamodbtypes.AttributeValue{
-				"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
-			},
-			UpdateExpression: aws.String("SET #s = :status, finished_at = :now"),
-			ExpressionAttributeNames: map[string]string{
-				"#s": "status",
-			},
-			ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
-				":status": &dynamodbtypes.AttributeValueMemberS{Value: stateRobotsBlocked},
-				":now":    &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-			},
-		})
-		return err
-	}
-
-	// Step 3: Check rate limit
-	domain := getDomain(url)
-	if !c.checkRateLimit(ctx, domain) {
-		c.log.Info().Str("url", url).Str("domain", domain).Msg("Rate limited, re-queuing")
-		// Reset status back to queued
-		_, _ = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-			TableName: &c.tableName,
-			Key: map[string]dynamodbtypes.AttributeValue{
-				"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
-			},
-			UpdateExpression: aws.String("SET #s = :queued"),
-			ExpressionAttributeNames: map[string]string{
-				"#s": "status",
-			},
-			ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
-				":queued": &dynamodbtypes.AttributeValueMemberS{Value: stateQueued},
-			},
-		})
-		// Re-queue with delay (convert ms to seconds, minimum 1 second)
-		delaySeconds := c.crawlDelayMs / 1000
-		if delaySeconds < 1 {
-			delaySeconds = 1
-		}
-		return c.requeueWithDelay(ctx, url, depth, delaySeconds)
-	}
-
-	// Step 4: Fetch the URL
-	result := c.fetchURL(ctx, url)
-
-	// Step 3: Update status based on fetch result
 	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
-	ttlStr := strconv.FormatInt(ttl, 10)
-
-	var finalStatus string
-	if result.Success {
-		finalStatus = stateDone
-	} else {
-		finalStatus = stateFailed
-	}
-
-	_, err = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
 		Key: map[string]dynamodbtypes.AttributeValue{
 			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
 		},
 		UpdateExpression: aws.String(
-			"SET #s = :status, finished_at = :now, expires_at = :ttl, http_status = :http_status, content_length = :content_length, content_type = :content_type, fetch_duration_ms = :duration, fetch_error = :error, crawl_depth = :depth",
+			"SET #s = :status, finished_at = :now, expires_at = :ttl, http_status = :http_status, " +
+				"content_length = :content_length, content_type = :content_type, fetch_duration_ms = :duration, " +
+				"fetch_error = :error, crawl_depth = :depth",
 		),
 		ExpressionAttributeNames: map[string]string{
 			"#s": "status",
 		},
 		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
-			":status":         &dynamodbtypes.AttributeValueMemberS{Value: finalStatus},
+			":status":         &dynamodbtypes.AttributeValueMemberS{Value: status},
 			":now":            &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
-			":ttl":            &dynamodbtypes.AttributeValueMemberN{Value: ttlStr},
+			":ttl":            &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(ttl, 10)},
 			":http_status":    &dynamodbtypes.AttributeValueMemberN{Value: strconv.Itoa(result.StatusCode)},
 			":content_length": &dynamodbtypes.AttributeValueMemberN{Value: strconv.FormatInt(result.ContentLength, 10)},
 			":content_type":   &dynamodbtypes.AttributeValueMemberS{Value: result.ContentType},
@@ -252,55 +273,66 @@ func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) 
 			":depth":          &dynamodbtypes.AttributeValueMemberN{Value: strconv.Itoa(depth)},
 		},
 	})
-
 	if err != nil {
-		c.log.Error().Err(err).Str("url", url).Msg("Failed to update status")
-		return err
+		c.log.Error().Err(err).Str("url_hash", urlHash).Msg("Failed to update status")
+	}
+	return err
+}
+
+// processHTMLContent uploads content to S3 and extracts links
+func (c *Crawler) processHTMLContent(ctx context.Context, url, urlHash string, result FetchResult, depth int) {
+	if !isHTML(result.ContentType) || len(result.Body) == 0 {
+		return
 	}
 
-	if result.Success {
-		c.log.Info().
-			Str("url", url).
-			Int("status", result.StatusCode).
-			Int64("bytes", result.ContentLength).
-			Int64("ms", result.DurationMs).
-			Msg("Fetched successfully")
-
-		// Step 4: Extract and enqueue links from HTML pages (if not at max depth)
-		if depth >= c.maxDepth {
-			c.log.Info().
-				Str("url", url).
-				Int("depth", depth).
-				Int("max_depth", c.maxDepth).
-				Msg("Max depth reached, not extracting links")
-		} else if isHTML(result.ContentType) && len(result.Body) > 0 {
-			links := extractLinks(result.Body, url)
-			c.log.Info().
-				Str("url", url).
-				Int("links_found", len(links)).
-				Msg("Extracted links")
-
-			// Enqueue discovered links (with deduplication) at depth+1
-			enqueued := c.enqueueLinks(ctx, links, depth+1)
-			if enqueued > 0 {
-				c.log.Info().
-					Str("url", url).
-					Int("enqueued", enqueued).
-					Int("skipped", len(links)-enqueued).
-					Int("child_depth", depth+1).
-					Msg("Enqueued new links")
-			}
-		}
+	// Upload to S3
+	text := extractText(result.Body)
+	uploadResult, err := c.uploadContent(ctx, urlHash, result.Body, text)
+	if err != nil {
+		c.log.Error().Err(err).Str("url", url).Msg("Failed to upload content to S3")
 	} else {
-		c.log.Warn().
-			Str("url", url).
-			Int("status", result.StatusCode).
-			Str("error", result.Error).
-			Int64("ms", result.DurationMs).
-			Msg("Fetch failed")
+		c.saveS3Keys(ctx, url, urlHash, uploadResult, len(text))
 	}
 
-	return nil
+	// Extract and enqueue links
+	c.extractAndEnqueueLinks(ctx, url, result.Body, depth)
+}
+
+// saveS3Keys updates DynamoDB with S3 content locations
+func (c *Crawler) saveS3Keys(ctx context.Context, url, urlHash string, upload *UploadResult, textLen int) {
+	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: &c.tableName,
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: urlHash},
+		},
+		UpdateExpression: aws.String("SET s3_bucket = :bucket, s3_raw_key = :raw_key, s3_text_key = :text_key"),
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":bucket":   &dynamodbtypes.AttributeValueMemberS{Value: c.contentBucket},
+			":raw_key":  &dynamodbtypes.AttributeValueMemberS{Value: upload.RawKey},
+			":text_key": &dynamodbtypes.AttributeValueMemberS{Value: upload.TextKey},
+		},
+	})
+	if err != nil {
+		c.log.Error().Err(err).Str("url", url).Msg("Failed to update DynamoDB with S3 keys")
+		return
+	}
+	c.log.Info().Str("url", url).Str("raw_key", upload.RawKey).Str("text_key", upload.TextKey).Int("text_len", textLen).Msg("Uploaded content to S3")
+}
+
+// extractAndEnqueueLinks discovers and queues new URLs from HTML
+func (c *Crawler) extractAndEnqueueLinks(ctx context.Context, url string, body []byte, depth int) {
+	if depth >= c.maxDepth {
+		c.log.Info().Str("url", url).Int("depth", depth).Int("max_depth", c.maxDepth).Msg("Max depth reached, not extracting links")
+		return
+	}
+
+	links := extractLinks(body, url)
+	c.log.Info().Str("url", url).Int("links_found", len(links)).Msg("Extracted links")
+
+	enqueued := c.enqueueLinks(ctx, links, depth+1)
+	if enqueued > 0 {
+		c.log.Info().Str("url", url).Int("enqueued", enqueued).Int("skipped", len(links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
+	}
 }
 
 func hashURL(u string) string {

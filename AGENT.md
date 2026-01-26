@@ -14,7 +14,7 @@ Distributed web crawler using AWS (SQS, DynamoDB, Lambda, S3) and Go.
 ## Current State
 - **Phases 1-10**: Complete (SQS, DynamoDB, Lambda, crawling, robots.txt, rate limiting, monitoring)
 - **Phase 11**: In progress (content storage)
-- **Current Step**: 11.1 — Add S3 bucket to CDK
+- **Current Step**: 11.4 — Store S3 keys in DynamoDB
 
 ## Directory Structure
 ```
@@ -43,6 +43,12 @@ The Lambda uses conditional DynamoDB update:
 ConditionExpression: "#s = :queued"
 ```
 Only ONE Lambda wins the race. Losers ACK and exit.
+
+## Go Style
+- Early return on failure (no if/else with success first)
+- No useless comments when code is self-documenting
+- Extract methods with clear names instead of inline comments
+- Keep functions short and focused
 
 ## Working Rules
 1. No placeholders in code
