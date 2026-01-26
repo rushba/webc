@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/rs/zerolog"
@@ -40,15 +42,17 @@ const (
 )
 
 type Crawler struct {
-	ddb          *dynamodb.Client
-	sqs          *sqs.Client
-	httpClient   *http.Client
-	tableName    string
-	queueURL     string
-	maxDepth     int
-	crawlDelayMs int
-	log          zerolog.Logger
-	robotsCache  map[string]*robotstxt.RobotsData // Cache robots.txt per domain
+	ddb           *dynamodb.Client
+	sqs           *sqs.Client
+	s3            *s3.Client
+	httpClient    *http.Client
+	tableName     string
+	queueURL      string
+	contentBucket string
+	maxDepth      int
+	crawlDelayMs  int
+	log           zerolog.Logger
+	robotsCache   map[string]*robotstxt.RobotsData // Cache robots.txt per domain
 }
 
 func NewCrawler(ctx context.Context) (*Crawler, error) {
@@ -69,6 +73,11 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		log.Fatal().Msg("QUEUE_URL environment variable not set")
 	}
 
+	contentBucket := os.Getenv("CONTENT_BUCKET")
+	if contentBucket == "" {
+		log.Fatal().Msg("CONTENT_BUCKET environment variable not set")
+	}
+
 	maxDepth := defaultMaxDepth
 	if maxDepthStr := os.Getenv("MAX_DEPTH"); maxDepthStr != "" {
 		if parsed, err := strconv.Atoi(maxDepthStr); err == nil && parsed >= 0 {
@@ -83,23 +92,25 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		}
 	}
 
-	log.Info().Int("max_depth", maxDepth).Int("crawl_delay_ms", crawlDelayMs).Msg("Crawler initialized")
+	log.Info().Int("max_depth", maxDepth).Int("crawl_delay_ms", crawlDelayMs).Str("content_bucket", contentBucket).Msg("Crawler initialized")
 
 	return &Crawler{
 		ddb: dynamodb.NewFromConfig(cfg),
 		sqs: sqs.NewFromConfig(cfg),
+		s3:  s3.NewFromConfig(cfg),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		},
-		tableName:    tableName,
-		queueURL:     queueURL,
-		maxDepth:     maxDepth,
-		crawlDelayMs: crawlDelayMs,
-		log:          log,
-		robotsCache:  make(map[string]*robotstxt.RobotsData),
+		tableName:     tableName,
+		queueURL:      queueURL,
+		contentBucket: contentBucket,
+		maxDepth:      maxDepth,
+		crawlDelayMs:  crawlDelayMs,
+		log:           log,
+		robotsCache:   make(map[string]*robotstxt.RobotsData),
 	}, nil
 }
 
@@ -356,6 +367,67 @@ func (c *Crawler) fetchURL(ctx context.Context, url string) FetchResult {
 		Error:         "",
 		Body:          body,
 	}
+}
+
+// UploadResult contains S3 keys for uploaded content
+type UploadResult struct {
+	RawKey  string
+	TextKey string
+}
+
+// uploadContent uploads raw HTML and extracted text to S3 with gzip compression
+func (c *Crawler) uploadContent(ctx context.Context, urlHash string, rawHTML []byte, text string) (*UploadResult, error) {
+	result := &UploadResult{
+		RawKey:  urlHash + "/raw.html.gz",
+		TextKey: urlHash + "/text.txt.gz",
+	}
+
+	// Upload raw HTML (gzip compressed)
+	rawGz, err := gzipCompress(rawHTML)
+	if err != nil {
+		return nil, err
+	}
+	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:          &c.contentBucket,
+		Key:             &result.RawKey,
+		Body:            bytes.NewReader(rawGz),
+		ContentType:     aws.String("text/html"),
+		ContentEncoding: aws.String("gzip"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Upload extracted text (gzip compressed)
+	textGz, err := gzipCompress([]byte(text))
+	if err != nil {
+		return nil, err
+	}
+	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:          &c.contentBucket,
+		Key:             &result.TextKey,
+		Body:            bytes.NewReader(textGz),
+		ContentType:     aws.String("text/plain"),
+		ContentEncoding: aws.String("gzip"),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// gzipCompress compresses data using gzip
+func gzipCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
