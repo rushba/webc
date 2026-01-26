@@ -181,8 +181,19 @@ Monitoring deployed:
 
 ---
 
+## Phase 11 — COMPLETE ✓
+
+Content storage working:
+- [x] S3 bucket with 30-day lifecycle
+- [x] Raw HTML + extracted text (gzip compressed)
+- [x] S3 keys stored in DynamoDB
+- [x] CloudWatch S3 metrics
+- [x] Cleanup tool updated with --bucket flag
+
+---
+
 ## Current Step
-→ **Phase 11** — Ready for next phase
+→ **Phase 12** — Ready for next phase
 
 ---
 

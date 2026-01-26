@@ -12,9 +12,8 @@ Distributed web crawler using AWS (SQS, DynamoDB, Lambda, S3) and Go.
 - **Test each step before proceeding to the next**
 
 ## Current State
-- **Phases 1-10**: Complete (SQS, DynamoDB, Lambda, crawling, robots.txt, rate limiting, monitoring)
-- **Phase 11**: In progress (content storage)
-- **Current Step**: 11.4 — Store S3 keys in DynamoDB
+- **Phases 1-11**: Complete (SQS, DynamoDB, Lambda, crawling, robots.txt, rate limiting, monitoring, content storage)
+- **Phase 12**: Ready for next phase
 
 ## Directory Structure
 ```
