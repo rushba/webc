@@ -57,3 +57,14 @@ Only ONE Lambda wins the race. Losers ACK and exit.
 5. **Do NOT proceed to next step until current step is tested and confirmed working**
 6. **Wait for user confirmation after each step**
 7. **Commit after each step with user confirmation**
+
+## Git Rules
+- **NEVER commit binary files** - check `git status` before committing
+- Binaries to watch for (all in .gitignore):
+  - `lambda/lambda`, `lambda/bootstrap`, `lambda/bootstrap.zip`
+  - `cdk/cdk-test`
+  - `consumer/consumer`, `producer/producer`
+  - `tools/cleanup/cleanup`
+  - `tools/domains/domains` (future)
+- If a binary appears in `git status`, run `git rm --cached <file>` before committing
+- Always run `git status` and review changes before `git commit`
