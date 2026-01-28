@@ -193,7 +193,311 @@ Content storage working:
 ---
 
 ## Current Step
-→ **Phase 12** — Ready for next phase
+→ **Phase 12** — Multi-Domain Search Crawler
+
+---
+
+# Phase 12-15 Plan — Multi-Domain Search Crawler
+
+## Goal
+Extend the crawler to support multi-domain crawling and add a search layer using OpenSearch, enabling a small-scale search engine over crawled content.
+
+## Target Architecture
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  Seed/Producer  │────▶│      SQS        │────▶│  Crawler Lambda │
+└─────────────────┘     └─────────────────┘     └────────┬────────┘
+                                                         │
+                        ┌────────────────────────────────┼────────────────────────────────┐
+                        │                                │                                │
+                        ▼                                ▼                                ▼
+               ┌─────────────────┐              ┌─────────────────┐              ┌─────────────────┐
+               │    DynamoDB     │              │       S3        │              │   DynamoDB      │
+               │   (URL state)   │              │  (raw + text)   │              │   (domains)     │
+               └─────────────────┘              └────────┬────────┘              └─────────────────┘
+                                                         │
+                                                         ▼ S3 Event
+                                               ┌─────────────────┐
+                                               │  Index Lambda   │
+                                               └────────┬────────┘
+                                                         │
+                                                         ▼
+                                               ┌─────────────────┐
+                                               │   OpenSearch    │
+                                               │   (EC2 t3.small)│
+                                               └────────┬────────┘
+                                                         │
+                                                         ▼
+                                               ┌─────────────────┐
+                                               │   Search API    │
+                                               │  (API Gateway)  │
+                                               └────────┬────────┘
+                                                         │
+                                                         ▼
+                                               ┌─────────────────┐
+                                               │     Web UI      │
+                                               │   (S3 static)   │
+                                               └─────────────────┘
+```
+
+---
+
+## Phase 12: Multi-Domain Crawling
+
+**Goal**: Remove same-domain restriction, add domain management via DynamoDB.
+
+### Step 12.1 — Domain Table in DynamoDB
+
+Add new items to existing DynamoDB table with prefix `allowed_domain#`:
+
+```go
+// Domain record structure
+{
+    "url_hash": "allowed_domain#example.com",  // PK with prefix
+    "domain": "example.com",
+    "status": "active",                         // active | paused | blocked
+    "discovered_from": "seed",                  // seed | auto-discovered
+    "created_at": "2026-01-28T10:00:00Z",
+    "pages_crawled": 0
+}
+```
+
+**Domain statuses**:
+- `active` - crawl links from this domain
+- `paused` - skip for now, can resume later
+- `blocked` - never crawl (e.g., spam domains)
+
+**Status**: [ ] Pending
+
+---
+
+### Step 12.2 — Update Lambda to Check Domain Table
+
+Changes to `lambda/main.go`:
+
+1. **Remove same-domain filter** in `normalizeURL()` (line 627-629)
+2. **Add domain check before enqueuing**:
+
+```go
+func (c *Crawler) isDomainAllowed(ctx context.Context, domain string) bool {
+    result, err := c.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+        TableName: &c.tableName,
+        Key: map[string]types.AttributeValue{
+            "url_hash": &types.AttributeValueMemberS{Value: "allowed_domain#" + domain},
+        },
+    })
+    if err != nil || result.Item == nil {
+        return false
+    }
+    status := result.Item["status"].(*types.AttributeValueMemberS).Value
+    return status == "active"
+}
+```
+
+**Status**: [ ] Pending
+
+---
+
+### Step 12.3 — Auto-Discovery of New Domains
+
+When a link to a new domain is found:
+
+```go
+func (c *Crawler) maybeAddDomain(ctx context.Context, domain, discoveredFrom string) {
+    _, _ = c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+        TableName: &c.tableName,
+        Item: map[string]types.AttributeValue{
+            "url_hash":        &types.AttributeValueMemberS{Value: "allowed_domain#" + domain},
+            "domain":          &types.AttributeValueMemberS{Value: domain},
+            "status":          &types.AttributeValueMemberS{Value: "active"},
+            "discovered_from": &types.AttributeValueMemberS{Value: discoveredFrom},
+            "created_at":      &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+        },
+        ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
+    })
+}
+```
+
+**Status**: [ ] Pending
+
+---
+
+### Step 12.4 — Domain Management CLI
+
+New `tools/domains/main.go`:
+
+```bash
+# List all domains
+go run . --list
+
+# Add a seed domain
+go run . --add example.com
+
+# Pause a domain
+go run . --pause example.com
+
+# Block a domain (spam)
+go run . --block spamsite.com
+
+# Show domain stats
+go run . --stats
+```
+
+**Status**: [ ] Pending
+
+---
+
+## Phase 13: OpenSearch on EC2
+
+**Goal**: Index crawled content for full-text search.
+**Decision**: EC2-based OpenSearch (~$15/month) for hands-on learning.
+
+### Step 13.1 — EC2 Instance Setup (via CDK)
+
+**Instance spec**:
+- AMI: Amazon Linux 2023
+- Type: t3.small (2 vCPU, 2GB RAM) - ~$15/month
+- Storage: 20GB gp3 EBS
+- OpenSearch version: 2.x (single-node)
+
+**UserData script** (installs OpenSearch on boot):
+```bash
+#!/bin/bash
+yum install -y java-17-amazon-corretto
+wget https://artifacts.opensearch.org/releases/bundle/opensearch/2.11.1/opensearch-2.11.1-linux-x64.tar.gz
+tar -xzf opensearch-2.11.1-linux-x64.tar.gz
+mv opensearch-2.11.1 /opt/opensearch
+echo "discovery.type: single-node" >> /opt/opensearch/config/opensearch.yml
+echo "network.host: 0.0.0.0" >> /opt/opensearch/config/opensearch.yml
+echo "plugins.security.disabled: true" >> /opt/opensearch/config/opensearch.yml
+/opt/opensearch/bin/opensearch -d
+```
+
+**Status**: [ ] Pending
+
+---
+
+### Step 13.2 — Create Search Index
+
+Index mapping for crawled pages:
+```json
+{
+  "mappings": {
+    "properties": {
+      "url": { "type": "keyword" },
+      "domain": { "type": "keyword" },
+      "title": { "type": "text", "analyzer": "standard" },
+      "text": { "type": "text", "analyzer": "standard" },
+      "crawled_at": { "type": "date" }
+    }
+  }
+}
+```
+
+**Status**: [ ] Pending
+
+---
+
+### Step 13.3 — Index Lambda
+
+New `indexer/` Lambda triggered by S3 PutObject events on text files:
+
+**Flow**:
+1. S3 event triggers Lambda (filter: `*/text.txt.gz`)
+2. Read text content from S3
+3. Fetch metadata (URL, title) from DynamoDB
+4. POST document to OpenSearch `/_doc`
+
+**Status**: [ ] Pending
+
+---
+
+### Step 13.4 — Lambda Network Access
+
+Lambda needs to reach EC2:
+- **Option A**: Lambda in same VPC as EC2 (add NAT Gateway - ~$30/month extra)
+- **Option B**: EC2 with public IP, Lambda calls via public internet (simpler)
+
+**Decision**: Start with Option B (public IP), migrate to VPC later.
+
+**Status**: [ ] Pending
+
+---
+
+## Phase 14: Search API
+
+**Goal**: REST API for searching crawled content.
+
+### API Gateway + Lambda
+
+```
+GET /search?q=golang+tutorial&domain=example.com
+```
+
+Response:
+```json
+{
+  "total": 42,
+  "results": [
+    {
+      "url": "https://example.com/go-intro",
+      "title": "Introduction to Go",
+      "snippet": "...Go is a statically typed, compiled...",
+      "score": 0.95
+    }
+  ]
+}
+```
+
+**Status**: [ ] Pending
+
+---
+
+## Phase 15: Simple Web UI
+
+**Goal**: Basic search interface.
+
+**Approach**: Static S3 website with HTML/JS calling Search API.
+
+**Features**:
+- Search box
+- Results list with title, URL, snippet
+- Filter by domain
+- Pagination
+
+**Status**: [ ] Pending
+
+---
+
+## Cost Estimate (EC2 OpenSearch)
+
+| Component                 | Monthly Cost |
+| ------------------------- | ------------ |
+| Lambda (crawl + index)    | ~$5          |
+| DynamoDB                  | ~$5          |
+| S3 (10GB)                 | ~$0.25       |
+| SQS                       | ~$1          |
+| EC2 t3.small (OpenSearch) | ~$15         |
+| API Gateway               | ~$3          |
+| **Total**                 | **~$30**     |
+
+---
+
+## Safety Considerations
+
+With auto-discovery enabled, the crawler can grow rapidly. Consider adding:
+- `MAX_DOMAINS` env var to cap total domains (e.g., 100)
+- `MAX_PAGES_PER_DOMAIN` to prevent one domain from dominating
+- Manual approval mode: auto-discovered domains start as `pending` instead of `active`
+
+---
+
+## Decisions Made
+
+- **OpenSearch**: EC2-based (t3.small, ~$15/month) - for hands-on learning
+- **Domain management**: DynamoDB table - dynamic add/remove without redeploy
+- **External links**: Auto-discover - new domains added when found (organic growth)
 
 ---
 
