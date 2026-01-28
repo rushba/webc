@@ -331,7 +331,7 @@ func (c *Crawler) extractAndEnqueueLinks(ctx context.Context, targetURL string, 
 	links := extractLinks(body, targetURL)
 	c.log.Info().Str("url", targetURL).Int("links_found", len(links)).Msg("Extracted links")
 
-	enqueued := c.enqueueLinks(ctx, links, depth+1)
+	enqueued := c.enqueueLinks(ctx, links, depth+1, targetURL)
 	if enqueued > 0 {
 		c.log.Info().Str("url", targetURL).Int("enqueued", enqueued).Int("skipped", len(links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
 	}
@@ -465,9 +465,10 @@ func gzipCompress(data []byte) ([]byte, error) {
 }
 
 // enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
-func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) int {
+// Auto-discovers new domains when external links are found
+func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, sourceURL string) int {
 	enqueued := 0
-	skippedDomain := 0
+	newDomains := 0
 	depthStr := strconv.Itoa(depth)
 
 	for _, link := range links {
@@ -476,10 +477,15 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) i
 			continue
 		}
 
-		// Check if domain is allowed
+		// Check if domain is allowed, auto-discover if not
 		if !c.isDomainAllowed(ctx, host) {
-			skippedDomain++
-			continue
+			// Try to auto-add the domain
+			if c.maybeAddDomain(ctx, host, sourceURL) {
+				newDomains++
+			} else {
+				// Domain exists but is not active (paused/blocked) - skip
+				continue
+			}
 		}
 
 		urlHash := hashURL(link)
@@ -518,8 +524,8 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) i
 		enqueued++
 	}
 
-	if skippedDomain > 0 {
-		c.log.Debug().Int("skipped_domain", skippedDomain).Msg("Skipped links from non-allowed domains")
+	if newDomains > 0 {
+		c.log.Info().Int("new_domains", newDomains).Msg("Auto-discovered new domains")
 	}
 
 	return enqueued
@@ -752,6 +758,27 @@ func (c *Crawler) isDomainAllowed(ctx context.Context, host string) bool {
 		return false
 	}
 	return statusAttr.Value == domainStatusActive
+}
+
+// maybeAddDomain auto-discovers a new domain and adds it to the allowlist
+// Returns true if domain was added (new), false if already exists
+func (c *Crawler) maybeAddDomain(ctx context.Context, host, discoveredFrom string) bool {
+	_, err := c.ddb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: &c.tableName,
+		Item: map[string]dynamodbtypes.AttributeValue{
+			"url_hash":        &dynamodbtypes.AttributeValueMemberS{Value: allowedDomainKeyPrefix + host},
+			"domain":          &dynamodbtypes.AttributeValueMemberS{Value: host},
+			"status":          &dynamodbtypes.AttributeValueMemberS{Value: domainStatusActive},
+			"discovered_from": &dynamodbtypes.AttributeValueMemberS{Value: discoveredFrom},
+			"created_at":      &dynamodbtypes.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+		},
+		ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
+	})
+	if err != nil {
+		return false // Already exists or error
+	}
+	c.log.Info().Str("domain", host).Str("discovered_from", discoveredFrom).Msg("Auto-discovered new domain")
+	return true
 }
 
 // checkRateLimit checks if we can crawl the domain (enough time since last crawl)
