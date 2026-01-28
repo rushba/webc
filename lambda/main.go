@@ -35,10 +35,12 @@ const (
 	stateFailed        = "failed"
 	stateRobotsBlocked = "robots_blocked"
 
-	defaultMaxDepth   = 3    // Default max crawl depth
-	defaultCrawlDelay = 1000 // Default delay between requests to same domain (ms)
-	robotsUserAgent   = "MyCrawler"
-	domainKeyPrefix   = "domain#" // Prefix for domain rate limit keys in DynamoDB
+	defaultMaxDepth        = 3    // Default max crawl depth
+	defaultCrawlDelay      = 1000 // Default delay between requests to same domain (ms)
+	robotsUserAgent        = "MyCrawler"
+	domainKeyPrefix        = "domain#"         // Prefix for domain rate limit keys in DynamoDB
+	allowedDomainKeyPrefix = "allowed_domain#" // Prefix for allowed domain keys in DynamoDB
+	domainStatusActive     = "active"
 )
 
 type Crawler struct {
@@ -465,9 +467,21 @@ func gzipCompress(data []byte) ([]byte, error) {
 // enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
 func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) int {
 	enqueued := 0
+	skippedDomain := 0
 	depthStr := strconv.Itoa(depth)
 
 	for _, link := range links {
+		host := getHost(link)
+		if host == "" {
+			continue
+		}
+
+		// Check if domain is allowed
+		if !c.isDomainAllowed(ctx, host) {
+			skippedDomain++
+			continue
+		}
+
 		urlHash := hashURL(link)
 
 		// Try to add to DynamoDB (will fail if already exists)
@@ -498,12 +512,14 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) i
 		})
 		if err != nil {
 			c.log.Error().Err(err).Str("url", link).Msg("Failed to enqueue link")
-			// Note: URL is in DynamoDB as "queued" but not in SQS - orphaned state
-			// Could add cleanup logic here, but keeping simple for now
 			continue
 		}
 
 		enqueued++
+	}
+
+	if skippedDomain > 0 {
+		c.log.Debug().Int("skipped_domain", skippedDomain).Msg("Skipped links from non-allowed domains")
 	}
 
 	return enqueued
@@ -624,10 +640,7 @@ func normalizeURL(href string, baseURL *url.URL) string {
 	// Remove fragment
 	resolved.Fragment = ""
 
-	// Same-domain filter: only crawl links on the same host
-	if resolved.Host != baseURL.Host {
-		return ""
-	}
+	// Note: Same-domain filter removed - domain allowlist checked in enqueueLinks()
 
 	return resolved.String()
 }
@@ -712,6 +725,33 @@ func getDomain(urlStr string) string {
 		return ""
 	}
 	return parsed.Scheme + "://" + parsed.Host
+}
+
+// getHost extracts just the host from a URL (without scheme)
+func getHost(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
+}
+
+// isDomainAllowed checks if a domain is in the allowed list
+func (c *Crawler) isDomainAllowed(ctx context.Context, host string) bool {
+	result, err := c.ddb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: &c.tableName,
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"url_hash": &dynamodbtypes.AttributeValueMemberS{Value: allowedDomainKeyPrefix + host},
+		},
+	})
+	if err != nil || result.Item == nil {
+		return false
+	}
+	statusAttr, ok := result.Item["status"].(*dynamodbtypes.AttributeValueMemberS)
+	if !ok {
+		return false
+	}
+	return statusAttr.Value == domainStatusActive
 }
 
 // checkRateLimit checks if we can crawl the domain (enough time since last crawl)
