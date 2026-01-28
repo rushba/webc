@@ -10,7 +10,7 @@ Run multiple consumers safely. Increase throughput without races.
 ### Step 5.1 — Prove race handling works
 **What**: Run 2 consumers in separate terminals against the same queue.
 **Why**: Verify only one wins the `queued → processing` transition.
-**How**: 
+**How**:
 1. Reset state: delete any existing items in DynamoDB table
 2. Enqueue 1 URL using producer
 3. Start consumer in terminal A with `--continuous`
@@ -25,7 +25,7 @@ cd producer && go run . "https://example.com/test-race-$(date +%s)"
 # Terminal 2: Start consumer A
 cd consumer && go run . --continuous
 
-# Terminal 3: Start consumer B  
+# Terminal 3: Start consumer B
 cd consumer && go run . --continuous
 ```
 
@@ -103,7 +103,7 @@ go run . --continuous --batch-size=10
 - `NumberOfMessagesReceived` — throughput
 - `ApproximateAgeOfOldestMessage` — latency/backlog
 
-**How**: 
+**How**:
 ```bash
 QUEUE_NAME=$(basename $QUEUE_URL)
 aws cloudwatch get-metric-statistics \
@@ -341,7 +341,7 @@ Respect robots.txt rules to be a polite crawler.
 ### Step 8.2 — Fetch and cache robots.txt
 **What**: Before crawling, fetch robots.txt for the domain.
 **Why**: Need the rules before checking URLs.
-**How**: 
+**How**:
 - In-memory cache per Lambda invocation
 - Handle 404 gracefully (allow all)
 - 512KB max size limit
@@ -436,7 +436,7 @@ Producer → SQS → Lambda → HTTP fetch → Parse HTML → Extract links
 ### Step 7.4 — Add crawl depth limiting
 **What**: Track crawl depth, stop at max depth.
 **Why**: Prevent infinite crawling and runaway costs.
-**How**: 
+**How**:
 - Add `depth` field to DynamoDB item
 - Pass depth in SQS message attributes
 - Stop extracting links when depth >= MAX_DEPTH

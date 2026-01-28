@@ -56,7 +56,6 @@ func main() {
 		},
 		ConditionExpression: awsString("attribute_not_exists(url_hash)"),
 	})
-
 	if err != nil {
 		fmt.Println("URL already seen, skipping:", url)
 		return
@@ -67,7 +66,6 @@ func main() {
 		QueueUrl:    &queueURL,
 		MessageBody: &url,
 	})
-
 	if err != nil {
 		panic(err)
 	}

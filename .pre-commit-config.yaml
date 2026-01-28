@@ -1,0 +1,36 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+  # General file hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: detect-aws-credentials
+        args: ['--allow-missing-credentials']
+      - id: detect-private-key
+
+  # Go build verification
+  - repo: local
+    hooks:
+      - id: go-build
+        name: go build
+        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do echo "Building $dir..." && (cd "$dir" && go build ./...) || exit 1; done'
+        language: system
+        pass_filenames: false
+        types: [go]
+
+  # Go linting with golangci-lint
+  - repo: local
+    hooks:
+      - id: golangci-lint
+        name: golangci-lint
+        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do echo "Linting $dir..." && (cd "$dir" && golangci-lint run --fix ./...) || exit 1; done'
+        language: system
+        pass_filenames: false
+        types: [go]

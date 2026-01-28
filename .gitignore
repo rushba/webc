@@ -21,4 +21,8 @@ cdk.out
 .env
 lambda/bootstrap
 lambda/bootstrap.zip
+lambda/lambda
 cdk/cdk-test
+consumer/consumer
+producer/producer
+tools/cleanup/cleanup

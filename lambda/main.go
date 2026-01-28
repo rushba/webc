@@ -35,10 +35,10 @@ const (
 	stateFailed        = "failed"
 	stateRobotsBlocked = "robots_blocked"
 
-	defaultMaxDepth    = 3    // Default max crawl depth
-	defaultCrawlDelay  = 1000 // Default delay between requests to same domain (ms)
-	robotsUserAgent    = "MyCrawler"
-	domainKeyPrefix    = "domain#" // Prefix for domain rate limit keys in DynamoDB
+	defaultMaxDepth   = 3    // Default max crawl depth
+	defaultCrawlDelay = 1000 // Default delay between requests to same domain (ms)
+	robotsUserAgent   = "MyCrawler"
+	domainKeyPrefix   = "domain#" // Prefix for domain rate limit keys in DynamoDB
 )
 
 type Crawler struct {
@@ -117,54 +117,54 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 func (c *Crawler) Handler(ctx context.Context, sqsEvent events.SQSEvent) error {
 	c.log.Info().Int("count", len(sqsEvent.Records)).Msg("Received batch")
 
-	for _, record := range sqsEvent.Records {
-		if err := c.processMessage(ctx, record); err != nil {
-			c.log.Error().Err(err).Str("message_id", record.MessageId).Msg("Failed to process message")
+	for i := range sqsEvent.Records {
+		if err := c.processMessage(ctx, &sqsEvent.Records[i]); err != nil {
+			c.log.Error().Err(err).Str("message_id", sqsEvent.Records[i].MessageId).Msg("Failed to process message")
 		}
 	}
 
 	return nil
 }
 
-func (c *Crawler) processMessage(ctx context.Context, record events.SQSMessage) error {
-	url := record.Body
-	urlHash := hashURL(url)
+func (c *Crawler) processMessage(ctx context.Context, record *events.SQSMessage) error {
+	targetURL := record.Body
+	urlHash := hashURL(targetURL)
 	depth := c.extractDepth(record)
 
-	c.log.Info().Str("url", url).Int("depth", depth).Msg("Processing")
+	c.log.Info().Str("url", targetURL).Int("depth", depth).Msg("Processing")
 
 	if !c.claimURL(ctx, urlHash) {
-		c.log.Warn().Str("url", url).Msg("LOST race — already claimed")
+		c.log.Warn().Str("url", targetURL).Msg("LOST race — already claimed")
 		return nil
 	}
-	c.log.Info().Str("url", url).Msg("WON race — checking robots.txt")
+	c.log.Info().Str("url", targetURL).Msg("WON race — checking robots.txt")
 
-	if !c.isAllowedByRobots(ctx, url) {
-		c.log.Info().Str("url", url).Msg("Blocked by robots.txt")
+	if !c.isAllowedByRobots(ctx, targetURL) {
+		c.log.Info().Str("url", targetURL).Msg("Blocked by robots.txt")
 		return c.markStatus(ctx, urlHash, stateRobotsBlocked)
 	}
 
-	if !c.checkRateLimit(ctx, getDomain(url)) {
-		return c.handleRateLimited(ctx, url, urlHash, depth)
+	if !c.checkRateLimit(ctx, getDomain(targetURL)) {
+		return c.handleRateLimited(ctx, targetURL, urlHash, depth)
 	}
 
-	result := c.fetchURL(ctx, url)
-	if err := c.saveFetchResult(ctx, urlHash, result, depth); err != nil {
+	result := c.fetchURL(ctx, targetURL)
+	if err := c.saveFetchResult(ctx, urlHash, &result, depth); err != nil {
 		return err
 	}
 
 	if !result.Success {
-		c.log.Warn().Str("url", url).Int("status", result.StatusCode).Str("error", result.Error).Int64("ms", result.DurationMs).Msg("Fetch failed")
+		c.log.Warn().Str("url", targetURL).Int("status", result.StatusCode).Str("error", result.Error).Int64("ms", result.DurationMs).Msg("Fetch failed")
 		return nil
 	}
 
-	c.log.Info().Str("url", url).Int("status", result.StatusCode).Int64("bytes", result.ContentLength).Int64("ms", result.DurationMs).Msg("Fetched successfully")
-	c.processHTMLContent(ctx, url, urlHash, result, depth)
+	c.log.Info().Str("url", targetURL).Int("status", result.StatusCode).Int64("bytes", result.ContentLength).Int64("ms", result.DurationMs).Msg("Fetched successfully")
+	c.processHTMLContent(ctx, targetURL, urlHash, &result, depth)
 	return nil
 }
 
 // extractDepth gets crawl depth from SQS message attributes
-func (c *Crawler) extractDepth(record events.SQSMessage) int {
+func (c *Crawler) extractDepth(record *events.SQSMessage) int {
 	if depthAttr, ok := record.MessageAttributes["depth"]; ok && depthAttr.StringValue != nil {
 		if parsed, err := strconv.Atoi(*depthAttr.StringValue); err == nil {
 			return parsed
@@ -215,8 +215,8 @@ func (c *Crawler) markStatus(ctx context.Context, urlHash, status string) error 
 }
 
 // handleRateLimited resets URL to queued and re-queues with delay
-func (c *Crawler) handleRateLimited(ctx context.Context, url, urlHash string, depth int) error {
-	c.log.Info().Str("url", url).Str("domain", getDomain(url)).Msg("Rate limited, re-queuing")
+func (c *Crawler) handleRateLimited(ctx context.Context, targetURL, urlHash string, depth int) error {
+	c.log.Info().Str("url", targetURL).Str("domain", getDomain(targetURL)).Msg("Rate limited, re-queuing")
 
 	// Reset to queued
 	_, _ = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -237,11 +237,11 @@ func (c *Crawler) handleRateLimited(ctx context.Context, url, urlHash string, de
 	if delaySeconds < 1 {
 		delaySeconds = 1
 	}
-	return c.requeueWithDelay(ctx, url, depth, delaySeconds)
+	return c.requeueWithDelay(ctx, targetURL, depth, delaySeconds)
 }
 
 // saveFetchResult persists fetch metadata to DynamoDB
-func (c *Crawler) saveFetchResult(ctx context.Context, urlHash string, result FetchResult, depth int) error {
+func (c *Crawler) saveFetchResult(ctx context.Context, urlHash string, result *FetchResult, depth int) error {
 	status := stateDone
 	if !result.Success {
 		status = stateFailed
@@ -280,7 +280,7 @@ func (c *Crawler) saveFetchResult(ctx context.Context, urlHash string, result Fe
 }
 
 // processHTMLContent uploads content to S3 and extracts links
-func (c *Crawler) processHTMLContent(ctx context.Context, url, urlHash string, result FetchResult, depth int) {
+func (c *Crawler) processHTMLContent(ctx context.Context, targetURL, urlHash string, result *FetchResult, depth int) {
 	if !isHTML(result.ContentType) || len(result.Body) == 0 {
 		return
 	}
@@ -289,17 +289,17 @@ func (c *Crawler) processHTMLContent(ctx context.Context, url, urlHash string, r
 	text := extractText(result.Body)
 	uploadResult, err := c.uploadContent(ctx, urlHash, result.Body, text)
 	if err != nil {
-		c.log.Error().Err(err).Str("url", url).Msg("Failed to upload content to S3")
+		c.log.Error().Err(err).Str("url", targetURL).Msg("Failed to upload content to S3")
 	} else {
-		c.saveS3Keys(ctx, url, urlHash, uploadResult, len(text))
+		c.saveS3Keys(ctx, targetURL, urlHash, uploadResult, len(text))
 	}
 
 	// Extract and enqueue links
-	c.extractAndEnqueueLinks(ctx, url, result.Body, depth)
+	c.extractAndEnqueueLinks(ctx, targetURL, result.Body, depth)
 }
 
 // saveS3Keys updates DynamoDB with S3 content locations
-func (c *Crawler) saveS3Keys(ctx context.Context, url, urlHash string, upload *UploadResult, textLen int) {
+func (c *Crawler) saveS3Keys(ctx context.Context, targetURL, urlHash string, upload *UploadResult, textLen int) {
 	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
 		Key: map[string]dynamodbtypes.AttributeValue{
@@ -313,25 +313,25 @@ func (c *Crawler) saveS3Keys(ctx context.Context, url, urlHash string, upload *U
 		},
 	})
 	if err != nil {
-		c.log.Error().Err(err).Str("url", url).Msg("Failed to update DynamoDB with S3 keys")
+		c.log.Error().Err(err).Str("url", targetURL).Msg("Failed to update DynamoDB with S3 keys")
 		return
 	}
-	c.log.Info().Str("url", url).Str("raw_key", upload.RawKey).Str("text_key", upload.TextKey).Int("text_len", textLen).Msg("Uploaded content to S3")
+	c.log.Info().Str("url", targetURL).Str("raw_key", upload.RawKey).Str("text_key", upload.TextKey).Int("text_len", textLen).Msg("Uploaded content to S3")
 }
 
 // extractAndEnqueueLinks discovers and queues new URLs from HTML
-func (c *Crawler) extractAndEnqueueLinks(ctx context.Context, url string, body []byte, depth int) {
+func (c *Crawler) extractAndEnqueueLinks(ctx context.Context, targetURL string, body []byte, depth int) {
 	if depth >= c.maxDepth {
-		c.log.Info().Str("url", url).Int("depth", depth).Int("max_depth", c.maxDepth).Msg("Max depth reached, not extracting links")
+		c.log.Info().Str("url", targetURL).Int("depth", depth).Int("max_depth", c.maxDepth).Msg("Max depth reached, not extracting links")
 		return
 	}
 
-	links := extractLinks(body, url)
-	c.log.Info().Str("url", url).Int("links_found", len(links)).Msg("Extracted links")
+	links := extractLinks(body, targetURL)
+	c.log.Info().Str("url", targetURL).Int("links_found", len(links)).Msg("Extracted links")
 
 	enqueued := c.enqueueLinks(ctx, links, depth+1)
 	if enqueued > 0 {
-		c.log.Info().Str("url", url).Int("enqueued", enqueued).Int("skipped", len(links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
+		c.log.Info().Str("url", targetURL).Int("enqueued", enqueued).Int("skipped", len(links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
 	}
 }
 
@@ -350,10 +350,10 @@ type FetchResult struct {
 	Body          []byte // For HTML pages, contains the body for link extraction
 }
 
-func (c *Crawler) fetchURL(ctx context.Context, url string) FetchResult {
+func (c *Crawler) fetchURL(ctx context.Context, targetURL string) FetchResult {
 	start := time.Now()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, http.NoBody)
 	if err != nil {
 		return FetchResult{
 			Success:    false,
@@ -480,7 +480,6 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) i
 			},
 			ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
 		})
-
 		if err != nil {
 			// URL already exists - skip
 			continue
@@ -497,7 +496,6 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int) i
 				},
 			},
 		})
-
 		if err != nil {
 			c.log.Error().Err(err).Str("url", link).Msg("Failed to enqueue link")
 			// Note: URL is in DynamoDB as "queued" but not in SQS - orphaned state
@@ -650,7 +648,7 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 
 	// Fetch robots.txt
 	robotsURL := domain + "/robots.txt"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL, http.NoBody)
 	if err != nil {
 		c.robotsCache[domain] = nil // Cache the failure
 		return nil
@@ -663,7 +661,7 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 		c.robotsCache[domain] = nil
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// If not found or error, allow all
 	if resp.StatusCode != http.StatusOK {
@@ -743,7 +741,6 @@ func (c *Crawler) checkRateLimit(ctx context.Context, domain string) bool {
 			":min_time": &dynamodbtypes.AttributeValueMemberN{Value: minTimeStr},
 		},
 	})
-
 	if err != nil {
 		// Condition failed = rate limited
 		c.log.Debug().Str("domain", domain).Int("delay_ms", c.crawlDelayMs).Msg("Rate limited")
@@ -754,7 +751,7 @@ func (c *Crawler) checkRateLimit(ctx context.Context, domain string) bool {
 }
 
 // requeueWithDelay sends the URL back to the queue with a delay
-func (c *Crawler) requeueWithDelay(ctx context.Context, urlStr string, depth int, delaySeconds int) error {
+func (c *Crawler) requeueWithDelay(ctx context.Context, urlStr string, depth, delaySeconds int) error {
 	depthStr := strconv.Itoa(depth)
 
 	// Cap delay at SQS max (900 seconds = 15 minutes)

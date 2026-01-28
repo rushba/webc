@@ -48,7 +48,7 @@ func main() {
 	if *queue || *all {
 		if queueURL == "" {
 			fmt.Println("QUEUE_URL not set, skipping queue")
-		} else if err := purgeQueue(ctx, cfg, queueURL); err != nil {
+		} else if err := purgeQueue(ctx, &cfg, queueURL); err != nil {
 			fmt.Println("Failed to purge queue:", err)
 		} else {
 			fmt.Println("✓ Queue purged")
@@ -59,7 +59,7 @@ func main() {
 		if tableName == "" {
 			fmt.Println("TABLE_NAME not set, skipping table")
 		} else {
-			count, err := clearTable(ctx, cfg, tableName)
+			count, err := clearTable(ctx, &cfg, tableName)
 			if err != nil {
 				fmt.Println("Failed to clear table:", err)
 			} else {
@@ -72,7 +72,7 @@ func main() {
 		if bucketName == "" {
 			fmt.Println("CONTENT_BUCKET not set, skipping bucket")
 		} else {
-			count, err := clearBucket(ctx, cfg, bucketName)
+			count, err := clearBucket(ctx, &cfg, bucketName)
 			if err != nil {
 				fmt.Println("Failed to clear bucket:", err)
 			} else {
@@ -82,8 +82,8 @@ func main() {
 	}
 }
 
-func purgeQueue(ctx context.Context, cfg aws.Config, queueURL string) error {
-	client := sqs.NewFromConfig(cfg)
+func purgeQueue(ctx context.Context, cfg *aws.Config, queueURL string) error {
+	client := sqs.NewFromConfig(*cfg)
 
 	_, err := client.PurgeQueue(ctx, &sqs.PurgeQueueInput{
 		QueueUrl: &queueURL,
@@ -91,8 +91,8 @@ func purgeQueue(ctx context.Context, cfg aws.Config, queueURL string) error {
 	return err
 }
 
-func clearTable(ctx context.Context, cfg aws.Config, tableName string) (int, error) {
-	client := dynamodb.NewFromConfig(cfg)
+func clearTable(ctx context.Context, cfg *aws.Config, tableName string) (int, error) {
+	client := dynamodb.NewFromConfig(*cfg)
 
 	// Scan all items
 	var items []map[string]types.AttributeValue
@@ -133,8 +133,8 @@ func clearTable(ctx context.Context, cfg aws.Config, tableName string) (int, err
 	return deleted, nil
 }
 
-func clearBucket(ctx context.Context, cfg aws.Config, bucketName string) (int, error) {
-	client := s3.NewFromConfig(cfg)
+func clearBucket(ctx context.Context, cfg *aws.Config, bucketName string) (int, error) {
+	client := s3.NewFromConfig(*cfg)
 
 	var objects []s3types.ObjectIdentifier
 	var continuationToken *string

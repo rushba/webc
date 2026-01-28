@@ -100,6 +100,12 @@ func main() {
 		log.Fatal().Msg("QUEUE_URL and TABLE_NAME must be set")
 	}
 
+	// Load AWS config before context setup to avoid exitAfterDefer issue
+	cfg, err := config.LoadDefaultConfig(context.Background())
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to load AWS config")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -112,23 +118,18 @@ func main() {
 		cancel()
 	}()
 
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to load AWS config")
-	}
-
 	sqsClient := sqs.NewFromConfig(cfg)
 	ddb := dynamodb.NewFromConfig(cfg)
 
 	if *continuous {
 		log.Info().Int("batch_size", *batchSize).Msg("Starting continuous polling (Ctrl+C to stop)")
-		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, log)
+		runLoop(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, &log)
 	} else {
-		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, log)
+		pollOnce(ctx, sqsClient, ddb, queueURL, tableName, *fail, *batchSize, &log)
 	}
 }
 
-func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log zerolog.Logger) {
+func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log *zerolog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -141,7 +142,7 @@ func runLoop(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, q
 	}
 }
 
-func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log zerolog.Logger) {
+func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, simulateFail bool, batchSize int, log *zerolog.Logger) {
 	out, err := sqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 		QueueUrl:            &queueURL,
 		MaxNumberOfMessages: int32(batchSize),
@@ -167,7 +168,7 @@ func pollOnce(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, 
 	}
 }
 
-func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, log zerolog.Logger) {
+func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Client, queueURL, tableName string, msg sqstypes.Message, simulateFail bool, log *zerolog.Logger) {
 	url := *msg.Body
 	urlHash := hashURL(url)
 
@@ -193,7 +194,6 @@ func processMessage(ctx context.Context, sqsClient *sqs.Client, ddb *dynamodb.Cl
 			":one":        &types.AttributeValueMemberN{Value: "1"},
 		},
 	})
-
 	if err != nil {
 		log.Warn().Str("url", url).Msg("LOST race — already claimed by another consumer")
 		ack(ctx, sqsClient, queueURL, msg.ReceiptHandle)
