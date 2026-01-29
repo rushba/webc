@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -19,6 +20,7 @@ import (
 
 type CdkTestStackProps struct {
 	awscdk.StackProps
+	Stage string
 }
 
 func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackProps) awscdk.Stack {
@@ -27,6 +29,14 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 		sprops = props.StackProps
 	}
 	stack := awscdk.NewStack(scope, &id, &sprops)
+
+	stage := "dev"
+	if props != nil && props.Stage != "" {
+		stage = props.Stage
+	}
+
+	// Tag all resources with stage for cost attribution
+	awscdk.Tags_Of(stack).Add(jsii.String("Stage"), jsii.String(stage), nil)
 
 	// The code that defines your stack goes here
 	awss3.NewBucket(stack, jsii.String("SanityBucket"), &awss3.BucketProps{
@@ -123,8 +133,9 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 	})
 
 	// CloudWatch Dashboard
+	dashboardName := fmt.Sprintf("CrawlerDashboard-%s", stage)
 	dashboard := awscloudwatch.NewDashboard(stack, jsii.String("CrawlerDashboard"), &awscloudwatch.DashboardProps{
-		DashboardName: jsii.String("CrawlerDashboard"),
+		DashboardName: jsii.String(dashboardName),
 	})
 
 	// Lambda metrics
@@ -327,10 +338,17 @@ func main() {
 
 	app := awscdk.NewApp(nil)
 
-	NewCdkTestStack(app, "CdkTestStack", &CdkTestStackProps{
-		awscdk.StackProps{
+	stage := os.Getenv("STAGE")
+	if stage == "" {
+		stage = "dev"
+	}
+	stackName := fmt.Sprintf("CrawlerStack-%s", stage)
+
+	NewCdkTestStack(app, stackName, &CdkTestStackProps{
+		StackProps: awscdk.StackProps{
 			Env: env(),
 		},
+		Stage: stage,
 	})
 
 	app.Synth(nil)
