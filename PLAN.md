@@ -501,6 +501,304 @@ With auto-discovery enabled, the crawler can grow rapidly. Consider adding:
 
 ---
 
+# Project Audit — Technical Debt & Improvements
+
+Audit performed on 2026-01-29. Covers Phases 1-12 (completed work).
+
+---
+
+## High Priority
+
+### A1 — Split `lambda/main.go` into packages
+
+**Problem**: `lambda/main.go` is 853 lines containing all logic: HTTP fetching, robots.txt, rate limiting, link extraction, S3 upload, domain management, and DynamoDB operations. Hard to test, reason about, and maintain.
+
+**Recommendation**: Extract into internal packages:
+```
+lambda/
+├── main.go              # Handler + wiring only
+├── crawler/crawler.go   # Crawl orchestration (processMessage flow)
+├── fetcher/fetcher.go   # HTTP fetching + redirect handling
+├── robots/robots.go     # Robots.txt fetch, parse, cache
+├── ratelimit/ratelimit.go # Domain-based rate limiting
+├── storage/s3.go        # S3 upload + gzip compression
+├── storage/dynamo.go    # DynamoDB state operations (claim, save, etc.)
+├── links/extract.go     # HTML parsing + link extraction
+└── domain/domain.go     # Domain allowlist + auto-discovery
+```
+
+**Status**: [ ] Pending
+
+---
+
+### A2 — Add unit tests for Lambda core functions
+
+**Problem**: Zero automated tests. CDK tests are commented out. The Lambda has race condition handling (`claimURL`), HTML parsing (`extractLinks`, `extractText`), URL normalization, and domain logic — all untested.
+
+**Recommendation**: Add tests for pure/isolated functions first:
+1. `extractLinks()` — various HTML inputs, relative URLs, edge cases
+2. `extractText()` — script/style removal, whitespace handling
+3. `normalizeURL()` — fragments, query params, relative paths
+4. `isDomainAllowed()` — mock DynamoDB, test active/paused/blocked
+5. `claimURL()` — mock DynamoDB, test won/lost race scenarios
+
+Use Go table-driven tests. Consider `testcontainers-go` or `dynamodblocal` for integration tests later.
+
+**Status**: [ ] Pending
+
+---
+
+### A3 — Add SSRF protection to `fetchURL()`
+
+**Problem**: `fetchURL()` follows HTTP redirects without validating the target. A malicious page could redirect the crawler to `http://169.254.169.254/` (AWS metadata endpoint) or internal VPC resources.
+
+**Recommendation**: Add a `CheckRedirect` function to the HTTP client that validates each redirect target:
+```go
+client := &http.Client{
+    Timeout: 10 * time.Second,
+    CheckRedirect: func(req *http.Request, via []*http.Request) error {
+        if isPrivateIP(req.URL.Hostname()) {
+            return fmt.Errorf("redirect to private IP blocked: %s", req.URL.Host)
+        }
+        if len(via) >= 10 {
+            return fmt.Errorf("too many redirects")
+        }
+        return nil
+    },
+}
+```
+
+Also validate the initial URL before fetching.
+
+**Status**: [ ] Pending
+
+---
+
+### A4 — Set Lambda concurrency limit
+
+**Problem**: No `reservedConcurrentExecutions` set on the Lambda function. A sudden spike in queued URLs could scale to hundreds of concurrent invocations, exceeding AWS account limits or generating unexpected costs.
+
+**Recommendation**: Add to CDK stack:
+```go
+ReservedConcurrentExecutions: jsii.Number(10), // Start conservative
+```
+
+Adjust based on observed load and cost tolerance.
+
+**Status**: [ ] Pending
+
+---
+
+## Medium Priority
+
+### A5 — Standardize Go versions across modules
+
+**Problem**: Inconsistent Go versions:
+- `cdk/` and `tools/cleanup/`: Go 1.23
+- `lambda/`: Go 1.24
+- `producer/` and `consumer/`: Go 1.25.5
+
+**Recommendation**: Update all `go.mod` files to use Go 1.25.x. Run `go mod tidy` in each module.
+
+**Status**: [ ] Pending
+
+---
+
+### A6 — Replace magic numbers with named constants
+
+**Problem**: Hardcoded values scattered through `lambda/main.go`:
+- `10 * 1024 * 1024` (10MB body limit)
+- `10 * time.Second` (HTTP timeout)
+- `7 * 24 * time.Hour` (DynamoDB TTL)
+- `1000` (default crawl delay ms)
+- `512 * 1024` (robots.txt max size)
+
+**Recommendation**: Define constants at the top of the file:
+```go
+const (
+    maxBodySize       = 10 * 1024 * 1024  // 10MB
+    httpTimeout       = 10 * time.Second
+    itemTTL           = 7 * 24 * time.Hour
+    defaultCrawlDelay = 1000 // milliseconds
+    maxRobotsTxtSize  = 512 * 1024
+)
+```
+
+**Status**: [ ] Pending
+
+---
+
+### A7 — Add a Makefile
+
+**Problem**: Common operations require remembering multiple commands across different directories. No single entry point for build/test/deploy/clean workflows.
+
+**Recommendation**: Add a root `Makefile`:
+```makefile
+.PHONY: build test deploy clean lint
+
+build:
+	cd lambda && ./build.sh
+
+test:
+	cd lambda && go test ./...
+	cd cdk && go test ./...
+
+deploy: build
+	cd cdk && cdk deploy
+
+clean:
+	cd tools/cleanup && go run . --all
+
+lint:
+	golangci-lint run ./...
+```
+
+**Status**: [ ] Pending
+
+---
+
+### A8 — Add environment parameterization to CDK
+
+**Problem**: No way to deploy separate dev/staging/prod stacks. A single stack means testing changes risks production data.
+
+**Recommendation**: Accept a stage parameter in the CDK stack:
+```go
+stage := os.Getenv("STAGE") // "dev" or "prod"
+stackName := fmt.Sprintf("CrawlerStack-%s", stage)
+```
+
+Prefix all resource names with the stage. Allows `STAGE=dev cdk deploy` and `STAGE=prod cdk deploy` as independent stacks.
+
+**Status**: [ ] Pending
+
+---
+
+### A9 — Add CI/CD pipeline (GitHub Actions)
+
+**Problem**: No automated pipeline. Regressions can only be caught by pre-commit hooks locally.
+
+**Recommendation**: Add `.github/workflows/ci.yml`:
+```yaml
+on: [push, pull_request]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: cd lambda && go build ./...
+      - run: cd lambda && go test ./...
+      - run: cd cdk && go build ./...
+      - uses: golangci/golangci-lint-action@v6
+```
+
+**Status**: [ ] Pending
+
+---
+
+### A10 — Distinguish retriable vs. permanent failures
+
+**Problem**: Error handling in the Lambda is inconsistent. A 404 (permanent) is treated the same as a network timeout (retriable). Permanent failures retry up to 5 times before hitting the DLQ, wasting invocations.
+
+**Recommendation**: After fetching, classify the HTTP status:
+- **Permanent (ACK immediately)**: 400, 401, 403, 404, 410, 451
+- **Retriable (let SQS retry)**: 429, 500, 502, 503, 504, network errors
+
+Mark permanent failures as `status: failed` with a reason in DynamoDB.
+
+**Status**: [ ] Pending
+
+---
+
+## Low Priority
+
+### A11 — Add circuit breaker for failing domains
+
+**Problem**: If a domain consistently returns 5xx errors, the crawler keeps retrying all URLs from it, wasting Lambda invocations and hammering a struggling server.
+
+**Recommendation**: Track consecutive failures per domain in DynamoDB. After N failures (e.g., 5), auto-pause the domain for a cooldown period. Resume after the cooldown expires.
+
+**Status**: [ ] Pending
+
+---
+
+### A12 — Improve S3 key structure
+
+**Problem**: Current key format `<urlHash>/raw.html.gz` is flat. Cannot list or lifecycle-manage content by domain.
+
+**Recommendation**: Change to `<domain>/<urlHash>/raw.html.gz`. This enables:
+- S3 prefix-based listing per domain
+- Per-domain lifecycle rules
+- Easier cost attribution per domain
+
+**Note**: This is a breaking change for existing stored content. Implement during a clean crawl.
+
+**Status**: [ ] Pending
+
+---
+
+### A13 — Add content deduplication
+
+**Problem**: Two different URLs returning identical content will both be stored in S3. Common with pagination, query parameter variations, and canonical URL issues.
+
+**Recommendation**: Compute SHA256 of page content. Store the hash in DynamoDB. Before uploading to S3, check if content with the same hash already exists. If so, reference the existing S3 key instead of uploading a duplicate.
+
+**Status**: [ ] Pending
+
+---
+
+### A14 — Evaluate `consumer/` module status
+
+**Problem**: The `consumer/` CLI was replaced by the Lambda function for production use. It's unclear whether it's still useful for local development/testing or is dead code.
+
+**Recommendation**: Either:
+- **Keep it**: Add a note in AGENT.md that it's a local testing tool, not used in production
+- **Remove it**: Delete the module to reduce maintenance surface
+
+**Status**: [ ] Pending — decide on purpose
+
+---
+
+### A15 — Update User-Agent with contact info
+
+**Problem**: `"MyCrawler/1.0"` doesn't include contact information. Well-behaved crawlers identify themselves with a URL or email so site operators can reach out about crawling issues.
+
+**Recommendation**: Change to something like:
+```
+"MyCrawler/1.0 (+https://github.com/yourname/cdk-test)"
+```
+
+**Status**: [ ] Pending
+
+---
+
+### A16 — Consider longer DynamoDB TTL
+
+**Problem**: 7-day TTL on URL state items means URLs can be re-discovered and re-crawled after expiry, causing duplicate work and storage.
+
+**Recommendation**: Evaluate whether 7 days is sufficient for your crawl cycle. Options:
+- Increase TTL to 30 days (match S3 lifecycle)
+- Add a lightweight "seen" record with longer TTL that just prevents re-enqueuing
+- Accept re-crawling as a feature (content freshness)
+
+**Status**: [ ] Pending — decide based on crawl frequency goals
+
+---
+
+## Audit Summary
+
+| Priority | Count | Items |
+|----------|-------|-------|
+| High     | 4     | A1-A4 (split code, add tests, SSRF fix, concurrency limit) |
+| Medium   | 6     | A5-A10 (Go versions, constants, Makefile, envs, CI, error handling) |
+| Low      | 6     | A11-A16 (circuit breaker, S3 keys, dedup, consumer, user-agent, TTL) |
+
+Recommended order: A3 (SSRF, quick security fix) → A4 (concurrency limit, quick) → A1 (split code) → A2 (tests) → A6 (constants) → A7 (Makefile) → rest as needed.
+
+---
+
 # Phase 10 Plan — Monitoring
 
 ## Goal
