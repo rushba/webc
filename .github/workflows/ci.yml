@@ -32,16 +32,16 @@ jobs:
             fi
           done
 
-      - name: Lint all modules
+      - name: Lint lambda
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1
           working-directory: lambda
-          args: run ./...
+          args: ./...
 
       - name: Lint cdk
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1
           working-directory: cdk
-          args: run ./...
+          args: ./...
