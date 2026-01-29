@@ -29,6 +29,12 @@ const (
 	domainKeyPrefix        = "domain#"         // Prefix for domain rate limit keys in DynamoDB
 	allowedDomainKeyPrefix = "allowed_domain#" // Prefix for allowed domain keys in DynamoDB
 	domainStatusActive     = "active"
+
+	httpTimeout        = 10 * time.Second
+	maxBodySize        = 10 * 1024 * 1024 // 10MB
+	maxRobotsTxtSize   = 512 * 1024       // 512KB
+	itemTTL            = 7 * 24 * time.Hour
+	sqsMaxDelaySeconds = 900 // 15 minutes
 )
 
 type Crawler struct {
@@ -89,7 +95,7 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		sqs: sqs.NewFromConfig(cfg),
 		s3:  s3.NewFromConfig(cfg),
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: httpTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

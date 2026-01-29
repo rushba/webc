@@ -55,7 +55,7 @@ func (c *Crawler) fetchURL(ctx context.Context, targetURL string) FetchResult {
 		_ = resp.Body.Close()
 	}()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	if err != nil {
 		return FetchResult{
 			Success:     false,

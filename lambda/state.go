@@ -58,7 +58,7 @@ func (c *Crawler) saveFetchResult(ctx context.Context, urlHash string, result *F
 		status = stateFailed
 	}
 
-	ttl := time.Now().Add(7 * 24 * time.Hour).Unix()
+	ttl := time.Now().Add(itemTTL).Unix()
 	_, err := c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: &c.tableName,
 		Key: map[string]dynamodbtypes.AttributeValue{

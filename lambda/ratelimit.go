@@ -78,9 +78,9 @@ func (c *Crawler) handleRateLimited(ctx context.Context, targetURL, urlHash stri
 func (c *Crawler) requeueWithDelay(ctx context.Context, urlStr string, depth, delaySeconds int) error {
 	depthStr := strconv.Itoa(depth)
 
-	// Cap delay at SQS max (900 seconds = 15 minutes)
-	if delaySeconds > 900 {
-		delaySeconds = 900
+	// Cap delay at SQS maximum
+	if delaySeconds > sqsMaxDelaySeconds {
+		delaySeconds = sqsMaxDelaySeconds
 	}
 
 	_, err := c.sqs.SendMessage(ctx, &sqs.SendMessageInput{

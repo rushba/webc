@@ -55,7 +55,7 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 		return nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB max
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRobotsTxtSize))
 	if err != nil {
 		c.robotsCache[domain] = nil
 		return nil
