@@ -1,6 +1,6 @@
 module cdk-test
 
-go 1.23.0
+go 1.25
 
 require (
 	github.com/aws/aws-cdk-go/awscdk/v2 v2.232.2
