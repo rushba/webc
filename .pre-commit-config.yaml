@@ -25,6 +25,16 @@ repos:
         pass_filenames: false
         types: [go]
 
+  # Go tests
+  - repo: local
+    hooks:
+      - id: go-test
+        name: go test
+        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do if ls "$dir"/*_test.go >/dev/null 2>&1; then echo "Testing $dir..." && (cd "$dir" && go test ./...) || exit 1; fi; done'
+        language: system
+        pass_filenames: false
+        types: [go]
+
   # Go linting with golangci-lint
   - repo: local
     hooks:
