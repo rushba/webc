@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build all modules
+        run: |
+          for dir in cdk consumer lambda producer tools/cleanup; do
+            echo "Building $dir..."
+            (cd "$dir" && go build ./...)
+          done
+
+      - name: Test all modules
+        run: |
+          for dir in cdk consumer lambda producer tools/cleanup; do
+            if ls "$dir"/*_test.go >/dev/null 2>&1; then
+              echo "Testing $dir..."
+              (cd "$dir" && go test ./...)
+            fi
+          done
+
+      - name: Lint all modules
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1
+          working-directory: lambda
+          args: run ./...
+
+      - name: Lint cdk
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.1
+          working-directory: cdk
+          args: run ./...
