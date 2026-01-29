@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 
 echo "Building Lambda..."
-GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap main.go
+GOOS=linux GOARCH=arm64 go build -tags lambda.norpc -o bootstrap .
 
 echo "Creating zip..."
 zip bootstrap.zip bootstrap
