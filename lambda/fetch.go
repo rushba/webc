@@ -80,6 +80,16 @@ func (c *Crawler) fetchURL(ctx context.Context, targetURL string) FetchResult {
 	}
 }
 
+// isPermanentHTTPError returns true for HTTP status codes that will never succeed on retry.
+func isPermanentHTTPError(statusCode int) bool {
+	switch statusCode {
+	case 400, 401, 403, 404, 405, 410, 414, 451:
+		return true
+	default:
+		return false
+	}
+}
+
 // isPrivateIP checks if an IP is loopback, private, or link-local
 func isPrivateIP(ip net.IP) bool {
 	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()

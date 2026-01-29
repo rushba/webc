@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -42,13 +43,22 @@ func (c *Crawler) processMessage(ctx context.Context, record *events.SQSMessage)
 	}
 
 	result := c.fetchURL(ctx, targetURL)
-	if err := c.saveFetchResult(ctx, urlHash, &result, depth); err != nil {
-		return err
-	}
 
 	if !result.Success {
-		c.log.Warn().Str("url", targetURL).Int("status", result.StatusCode).Str("error", result.Error).Int64("ms", result.DurationMs).Msg("Fetch failed")
-		return nil
+		// Classify the failure
+		if result.StatusCode > 0 && isPermanentHTTPError(result.StatusCode) {
+			// Permanent failure (404, 403, etc.) — save and acknowledge
+			c.log.Warn().Str("url", targetURL).Int("status", result.StatusCode).Int64("ms", result.DurationMs).Msg("Permanent failure")
+			return c.saveFetchResult(ctx, urlHash, &result, depth)
+		}
+
+		// Retriable failure (5xx, network error, etc.) — return error so SQS retries
+		c.log.Warn().Str("url", targetURL).Int("status", result.StatusCode).Str("error", result.Error).Int64("ms", result.DurationMs).Msg("Retriable failure")
+		return fmt.Errorf("retriable failure for %s: status=%d err=%s", targetURL, result.StatusCode, result.Error)
+	}
+
+	if err := c.saveFetchResult(ctx, urlHash, &result, depth); err != nil {
+		return err
 	}
 
 	c.log.Info().Str("url", targetURL).Int("status", result.StatusCode).Int64("bytes", result.ContentLength).Int64("ms", result.DurationMs).Msg("Fetched successfully")

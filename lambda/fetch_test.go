@@ -44,6 +44,44 @@ func TestIsPrivateIP(t *testing.T) {
 	}
 }
 
+func TestIsPermanentHTTPError(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		want       bool
+	}{
+		// Permanent errors — should not retry
+		{"400 Bad Request", 400, true},
+		{"401 Unauthorized", 401, true},
+		{"403 Forbidden", 403, true},
+		{"404 Not Found", 404, true},
+		{"405 Method Not Allowed", 405, true},
+		{"410 Gone", 410, true},
+		{"414 URI Too Long", 414, true},
+		{"451 Unavailable For Legal Reasons", 451, true},
+
+		// Retriable errors — should retry
+		{"429 Too Many Requests", 429, false},
+		{"500 Internal Server Error", 500, false},
+		{"502 Bad Gateway", 502, false},
+		{"503 Service Unavailable", 503, false},
+		{"504 Gateway Timeout", 504, false},
+
+		// Success codes — not permanent errors
+		{"200 OK", 200, false},
+		{"301 Moved Permanently", 301, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPermanentHTTPError(tt.statusCode)
+			if got != tt.want {
+				t.Errorf("isPermanentHTTPError(%d) = %v, want %v", tt.statusCode, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateHost(t *testing.T) {
 	tests := []struct {
 		name    string
