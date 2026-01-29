@@ -6,7 +6,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -342,6 +344,42 @@ func hashURL(u string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// isPrivateIP checks if an IP is loopback, private, or link-local
+func isPrivateIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+// validateHost resolves a hostname and checks that none of its IPs are private/internal.
+// Blocks SSRF attempts targeting AWS metadata (169.254.169.254), localhost, or internal networks.
+func validateHost(hostname string) error {
+	host, _, err := net.SplitHostPort(hostname)
+	if err != nil {
+		host = hostname // no port
+	}
+
+	// Check literal IP addresses
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("blocked: private IP %s", ip)
+		}
+		return nil
+	}
+
+	// Resolve hostname and check all results
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("DNS lookup failed for %s: %w", host, err)
+	}
+
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("blocked: %s resolves to private IP %s", host, ip)
+		}
+	}
+
+	return nil
+}
+
 type FetchResult struct {
 	Success       bool
 	StatusCode    int
@@ -361,6 +399,15 @@ func (c *Crawler) fetchURL(ctx context.Context, targetURL string) FetchResult {
 			Success:    false,
 			DurationMs: time.Since(start).Milliseconds(),
 			Error:      "invalid request: " + err.Error(),
+		}
+	}
+
+	// SSRF protection: block requests to private/internal IPs
+	if err := validateHost(req.URL.Host); err != nil {
+		return FetchResult{
+			Success:    false,
+			DurationMs: time.Since(start).Milliseconds(),
+			Error:      "SSRF blocked: " + err.Error(),
 		}
 	}
 
@@ -667,6 +714,14 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 
 	// Fetch robots.txt
 	robotsURL := domain + "/robots.txt"
+
+	// SSRF protection: block requests to private/internal IPs
+	if err := validateHost(parsed.Host); err != nil {
+		c.log.Warn().Str("domain", domain).Err(err).Msg("SSRF blocked for robots.txt")
+		c.robotsCache[domain] = nil
+		return nil
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, robotsURL, http.NoBody)
 	if err != nil {
 		c.robotsCache[domain] = nil // Cache the failure
