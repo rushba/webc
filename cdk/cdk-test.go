@@ -73,12 +73,13 @@ func NewCdkTestStack(scope constructs.Construct, id string, props *CdkTestStackP
 
 	// Lambda function for crawling
 	crawlerLambda := awslambda.NewFunction(stack, jsii.String("CrawlerLambda"), &awslambda.FunctionProps{
-		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
-		Handler:      jsii.String("bootstrap"),
-		Code:         awslambda.Code_FromAsset(jsii.String("../lambda/bootstrap.zip"), nil),
-		MemorySize:   jsii.Number(128),
-		Timeout:      awscdk.Duration_Seconds(jsii.Number(30)),
-		Architecture: awslambda.Architecture_ARM_64(),
+		Runtime:                      awslambda.Runtime_PROVIDED_AL2023(),
+		Handler:                      jsii.String("bootstrap"),
+		Code:                         awslambda.Code_FromAsset(jsii.String("../lambda/bootstrap.zip"), nil),
+		MemorySize:                   jsii.Number(128),
+		Timeout:                      awscdk.Duration_Seconds(jsii.Number(30)),
+		Architecture:                 awslambda.Architecture_ARM_64(),
+		ReservedConcurrentExecutions: jsii.Number(10), // Cap concurrency to control costs and avoid account limits
 		// Allow recursive loop: Lambda → SQS → Lambda is intentional for crawling
 		RecursiveLoop: awslambda.RecursiveLoop_ALLOW,
 		Environment: &map[string]*string{
