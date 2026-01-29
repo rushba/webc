@@ -31,13 +31,14 @@ linters:
     misspell:
       locale: US
 
+  exclusions:
+    rules:
+      # Exclude some linters from running on tests
+      - path: _test\.go
+        linters:
+          - gocritic
+
 issues:
   # Don't limit the number of issues per linter
   max-issues-per-linter: 0
   max-same-issues: 0
-
-  exclude-rules:
-    # Exclude some linters from running on tests
-    - path: _test\.go
-      linters:
-        - gocritic
