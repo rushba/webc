@@ -9,9 +9,9 @@ import (
 
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	awsddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/rs/zerolog"
 	"github.com/temoto/robotstxt"
 )
@@ -38,9 +38,9 @@ const (
 )
 
 type Crawler struct {
-	ddb           *dynamodb.Client
-	sqs           *sqs.Client
-	s3            *s3.Client
+	ddb           DynamoDBAPI
+	sqs           SQSAPI
+	s3            S3API
 	httpClient    *http.Client
 	tableName     string
 	queueURL      string
@@ -91,9 +91,9 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 	log.Info().Int("max_depth", maxDepth).Int("crawl_delay_ms", crawlDelayMs).Str("content_bucket", contentBucket).Msg("Crawler initialized")
 
 	return &Crawler{
-		ddb: dynamodb.NewFromConfig(cfg),
-		sqs: sqs.NewFromConfig(cfg),
-		s3:  s3.NewFromConfig(cfg),
+		ddb: awsddb.NewFromConfig(cfg),
+		sqs: awssqs.NewFromConfig(cfg),
+		s3:  awss3.NewFromConfig(cfg),
 		httpClient: &http.Client{
 			Timeout: httpTimeout,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
