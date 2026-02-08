@@ -34,7 +34,8 @@ const (
 	maxBodySize        = 10 * 1024 * 1024 // 10MB
 	maxRobotsTxtSize   = 512 * 1024       // 512KB
 	itemTTL            = 7 * 24 * time.Hour
-	sqsMaxDelaySeconds = 900 // 15 minutes
+	sqsMaxDelaySeconds = 900  // 15 minutes
+	maxRobotsCacheSize = 1000 // Max domains to cache robots.txt for
 )
 
 type Crawler struct {

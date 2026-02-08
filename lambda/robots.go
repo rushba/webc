@@ -69,8 +69,22 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 	}
 
 	c.log.Info().Str("domain", domain).Msg("Loaded robots.txt")
+	c.evictRobotsCacheIfFull()
 	c.robotsCache[domain] = robots
 	return robots
+}
+
+// evictRobotsCacheIfFull removes a random entry when the cache reaches max size.
+// Using random eviction (Go map iteration order) keeps it simple and O(1).
+func (c *Crawler) evictRobotsCacheIfFull() {
+	if len(c.robotsCache) < maxRobotsCacheSize {
+		return
+	}
+	// Delete one random entry (Go map iteration is randomized)
+	for k := range c.robotsCache {
+		delete(c.robotsCache, k)
+		break
+	}
 }
 
 // isAllowedByRobots checks if a URL is allowed by robots.txt
