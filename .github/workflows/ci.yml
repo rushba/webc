@@ -35,13 +35,13 @@ jobs:
       - name: Lint lambda
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1
+          version: v2.8
           working-directory: lambda
           args: ./...
 
       - name: Lint cdk
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1
+          version: v2.8
           working-directory: cdk
           args: ./...
