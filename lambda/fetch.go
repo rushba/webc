@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"syscall"
 	"time"
 )
 
@@ -97,6 +98,8 @@ func isPrivateIP(ip net.IP) bool {
 
 // validateHost resolves a hostname and checks that none of its IPs are private/internal.
 // Blocks SSRF attempts targeting AWS metadata (169.254.169.254), localhost, or internal networks.
+// Note: This provides early rejection only. The SSRF-safe dialer (ssrfSafeDialer) provides
+// defense-in-depth against DNS rebinding by validating IPs at connection time.
 func validateHost(hostname string) error {
 	host, _, err := net.SplitHostPort(hostname)
 	if err != nil {
@@ -124,4 +127,29 @@ func validateHost(hostname string) error {
 	}
 
 	return nil
+}
+
+// ssrfSafeTransport returns an http.Transport with a Control function on the dialer
+// that checks the resolved IP at connection time, preventing DNS rebinding attacks.
+// This is defense-in-depth: validateHost provides early rejection, and this transport
+// ensures the actual TCP connection never reaches a private IP even if DNS changes
+// between the validateHost call and the connection.
+func ssrfSafeTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+			Control: func(network, address string, c syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return fmt.Errorf("SSRF dialer: invalid address %s: %w", address, err)
+				}
+				ip := net.ParseIP(host)
+				if ip != nil && isPrivateIP(ip) {
+					return fmt.Errorf("SSRF dialer: blocked connection to private IP %s", ip)
+				}
+				return nil
+			},
+		}).DialContext,
+	}
 }

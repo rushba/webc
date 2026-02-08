@@ -95,7 +95,8 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		sqs: awssqs.NewFromConfig(cfg),
 		s3:  awss3.NewFromConfig(cfg),
 		httpClient: &http.Client{
-			Timeout: httpTimeout,
+			Timeout:   httpTimeout,
+			Transport: ssrfSafeTransport(),
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
