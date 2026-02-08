@@ -176,6 +176,90 @@ func TestExtractText(t *testing.T) {
 	}
 }
 
+func TestParseAndExtract(t *testing.T) {
+	tests := []struct {
+		name      string
+		html      string
+		baseURL   string
+		wantLinks []string
+		wantText  string
+	}{
+		{
+			name:      "extracts both links and text",
+			html:      `<html><body><p>Hello</p><a href="/page">Link</a></body></html>`,
+			baseURL:   "https://example.com",
+			wantLinks: []string{"https://example.com/page"},
+			wantText:  "Hello Link",
+		},
+		{
+			name:      "strips scripts from text but still finds links",
+			html:      `<html><body><script>bad()</script><a href="/a">Text</a></body></html>`,
+			baseURL:   "https://example.com",
+			wantLinks: []string{"https://example.com/a"},
+			wantText:  "Text",
+		},
+		{
+			name:      "empty body",
+			html:      `<html><body></body></html>`,
+			baseURL:   "https://example.com",
+			wantLinks: nil,
+			wantText:  "",
+		},
+		{
+			name:      "matches extractLinks and extractText separately",
+			html:      `<html><head><title>T</title></head><body><h1>Header</h1><a href="/a">A</a><p>Text</p><a href="/b">B</a></body></html>`,
+			baseURL:   "https://example.com",
+			wantLinks: []string{"https://example.com/a", "https://example.com/b"},
+			wantText:  "Header A Text B",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseAndExtract([]byte(tt.html), tt.baseURL)
+
+			if len(result.Links) != len(tt.wantLinks) {
+				t.Fatalf("parseAndExtract() links = %d, want %d\ngot:  %v\nwant: %v", len(result.Links), len(tt.wantLinks), result.Links, tt.wantLinks)
+			}
+			for i := range result.Links {
+				if result.Links[i] != tt.wantLinks[i] {
+					t.Errorf("link[%d] = %q, want %q", i, result.Links[i], tt.wantLinks[i])
+				}
+			}
+			if result.Text != tt.wantText {
+				t.Errorf("text = %q, want %q", result.Text, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestParseAndExtractMatchesSeparateFunctions(t *testing.T) {
+	html := `<html><head><title>Test</title></head><body>
+		<h1>Welcome</h1>
+		<p>Some <a href="/link1">link text</a> in a paragraph.</p>
+		<div><a href="https://other.com/page">External</a></div>
+		<script>alert('no')</script>
+		<p>More content here.</p>
+	</body></html>`
+	baseURL := "https://example.com"
+
+	combined := parseAndExtract([]byte(html), baseURL)
+	separateLinks := extractLinks([]byte(html), baseURL)
+	separateText := extractText([]byte(html))
+
+	if len(combined.Links) != len(separateLinks) {
+		t.Fatalf("link count mismatch: combined=%d, separate=%d", len(combined.Links), len(separateLinks))
+	}
+	for i := range combined.Links {
+		if combined.Links[i] != separateLinks[i] {
+			t.Errorf("link[%d] mismatch: combined=%q, separate=%q", i, combined.Links[i], separateLinks[i])
+		}
+	}
+	if combined.Text != separateText {
+		t.Errorf("text mismatch:\ncombined: %q\nseparate: %q", combined.Text, separateText)
+	}
+}
+
 func TestNormalizeURL(t *testing.T) {
 	base, _ := url.Parse("https://example.com/dir/page")
 

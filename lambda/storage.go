@@ -5,11 +5,13 @@ import (
 	"compress/gzip"
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"golang.org/x/sync/errgroup"
 )
 
 // UploadResult contains S3 keys for uploaded content
@@ -18,45 +20,51 @@ type UploadResult struct {
 	TextKey string
 }
 
-// uploadContent uploads raw HTML and extracted text to S3 with gzip compression
+// uploadContent uploads raw HTML and extracted text to S3 with gzip compression.
+// Both uploads run concurrently via errgroup.
 func (c *Crawler) uploadContent(ctx context.Context, urlHash string, rawHTML []byte, text string) (*UploadResult, error) {
 	result := &UploadResult{
 		RawKey:  urlHash + "/raw.html.gz",
 		TextKey: urlHash + "/text.txt.gz",
 	}
 
-	// Upload raw HTML (gzip compressed)
-	rawGz, err := gzipCompress(rawHTML)
-	if err != nil {
-		return nil, err
-	}
-	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:          &c.contentBucket,
-		Key:             &result.RawKey,
-		Body:            bytes.NewReader(rawGz),
-		ContentType:     aws.String("text/html"),
-		ContentEncoding: aws.String("gzip"),
-	})
-	if err != nil {
-		return nil, err
-	}
+	g, ctx := errgroup.WithContext(ctx)
 
-	// Upload extracted text (gzip compressed)
-	textGz, err := gzipCompress([]byte(text))
-	if err != nil {
-		return nil, err
-	}
-	_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:          &c.contentBucket,
-		Key:             &result.TextKey,
-		Body:            bytes.NewReader(textGz),
-		ContentType:     aws.String("text/plain"),
-		ContentEncoding: aws.String("gzip"),
+	// Upload raw HTML (gzip compressed) concurrently
+	g.Go(func() error {
+		rawGz, err := gzipCompressPooled(rawHTML)
+		if err != nil {
+			return err
+		}
+		_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:          &c.contentBucket,
+			Key:             &result.RawKey,
+			Body:            bytes.NewReader(rawGz),
+			ContentType:     aws.String("text/html"),
+			ContentEncoding: aws.String("gzip"),
+		})
+		return err
 	})
-	if err != nil {
+
+	// Upload extracted text (gzip compressed) concurrently
+	g.Go(func() error {
+		textGz, err := gzipCompressPooled([]byte(text))
+		if err != nil {
+			return err
+		}
+		_, err = c.s3.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:          &c.contentBucket,
+			Key:             &result.TextKey,
+			Body:            bytes.NewReader(textGz),
+			ContentType:     aws.String("text/plain"),
+			ContentEncoding: aws.String("gzip"),
+		})
+		return err
+	})
+
+	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-
 	return result, nil
 }
 
@@ -70,6 +78,29 @@ func gzipCompress(data []byte) ([]byte, error) {
 	if err := gz.Close(); err != nil {
 		return nil, err
 	}
+	return buf.Bytes(), nil
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		return gzip.NewWriter(nil)
+	},
+}
+
+// gzipCompressPooled compresses data using a pooled gzip writer to reduce GC pressure
+func gzipCompressPooled(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzipWriterPool.Get().(*gzip.Writer)
+	gz.Reset(&buf)
+	if _, err := gz.Write(data); err != nil {
+		gzipWriterPool.Put(gz)
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		gzipWriterPool.Put(gz)
+		return nil, err
+	}
+	gzipWriterPool.Put(gz)
 	return buf.Bytes(), nil
 }
 

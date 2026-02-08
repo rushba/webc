@@ -76,21 +76,30 @@ func (c *Crawler) extractDepth(record *events.SQSMessage) int {
 	return 0
 }
 
-// processHTMLContent uploads content to S3 and extracts links
+// processHTMLContent uploads content to S3 and extracts links.
+// Uses single-pass HTML parsing to extract both text and links together.
 func (c *Crawler) processHTMLContent(ctx context.Context, targetURL, urlHash string, result *FetchResult, depth int) {
 	if !isHTML(result.ContentType) || len(result.Body) == 0 {
 		return
 	}
 
+	// Single-pass parse: extract both text and links
+	parsed := parseAndExtract(result.Body, targetURL)
+
 	// Upload to S3
-	text := extractText(result.Body)
-	uploadResult, err := c.uploadContent(ctx, urlHash, result.Body, text)
+	uploadResult, err := c.uploadContent(ctx, urlHash, result.Body, parsed.Text)
 	if err != nil {
 		c.log.Error().Err(err).Str("url", targetURL).Msg("Failed to upload content to S3")
 	} else {
-		c.saveS3Keys(ctx, targetURL, urlHash, uploadResult, len(text))
+		c.saveS3Keys(ctx, targetURL, urlHash, uploadResult, len(parsed.Text))
 	}
 
-	// Extract and enqueue links
-	c.extractAndEnqueueLinks(ctx, targetURL, result.Body, depth)
+	// Enqueue discovered links
+	if depth < c.maxDepth && len(parsed.Links) > 0 {
+		c.log.Info().Str("url", targetURL).Int("links_found", len(parsed.Links)).Msg("Extracted links")
+		enqueued := c.enqueueLinks(ctx, parsed.Links, depth+1, targetURL)
+		if enqueued > 0 {
+			c.log.Info().Str("url", targetURL).Int("enqueued", enqueued).Int("skipped", len(parsed.Links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
+		}
+	}
 }

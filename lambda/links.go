@@ -15,28 +15,15 @@ import (
 	"golang.org/x/net/html"
 )
 
-// extractAndEnqueueLinks discovers and queues new URLs from HTML
-func (c *Crawler) extractAndEnqueueLinks(ctx context.Context, targetURL string, body []byte, depth int) {
-	if depth >= c.maxDepth {
-		c.log.Info().Str("url", targetURL).Int("depth", depth).Int("max_depth", c.maxDepth).Msg("Max depth reached, not extracting links")
-		return
-	}
-
-	links := extractLinks(body, targetURL)
-	c.log.Info().Str("url", targetURL).Int("links_found", len(links)).Msg("Extracted links")
-
-	enqueued := c.enqueueLinks(ctx, links, depth+1, targetURL)
-	if enqueued > 0 {
-		c.log.Info().Str("url", targetURL).Int("enqueued", enqueued).Int("skipped", len(links)-enqueued).Int("child_depth", depth+1).Msg("Enqueued new links")
-	}
-}
-
-// enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication)
-// Auto-discovers new domains when external links are found
+// enqueueLinks adds new URLs to DynamoDB and SQS queue (with deduplication).
+// Uses SQS SendMessageBatch to send up to 10 messages per API call.
 func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, sourceURL string) int {
 	enqueued := 0
 	newDomains := 0
 	depthStr := strconv.Itoa(depth)
+
+	// Collect new URLs that pass dedup, then batch-send to SQS
+	var pending []string
 
 	for _, link := range links {
 		host := getHost(link)
@@ -46,11 +33,9 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, s
 
 		// Check if domain is allowed, auto-discover if not
 		if !c.isDomainAllowed(ctx, host) {
-			// Try to auto-add the domain
 			if c.maybeAddDomain(ctx, host, sourceURL) {
 				newDomains++
 			} else {
-				// Domain exists but is not active (paused/blocked) - skip
 				continue
 			}
 		}
@@ -68,27 +53,50 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, s
 			ConditionExpression: aws.String("attribute_not_exists(url_hash)"),
 		})
 		if err != nil {
-			// URL already exists - skip
 			continue
 		}
 
-		// New URL - enqueue to SQS with depth attribute
-		_, err = c.sqs.SendMessage(ctx, &sqs.SendMessageInput{
-			QueueUrl:    &c.queueURL,
-			MessageBody: &link,
-			MessageAttributes: map[string]sqstypes.MessageAttributeValue{
-				"depth": {
-					DataType:    aws.String("Number"),
-					StringValue: &depthStr,
+		pending = append(pending, link)
+	}
+
+	// Batch send to SQS (up to 10 per batch)
+	const sqsBatchSize = 10
+	for i := 0; i < len(pending); i += sqsBatchSize {
+		end := i + sqsBatchSize
+		if end > len(pending) {
+			end = len(pending)
+		}
+		batch := pending[i:end]
+
+		entries := make([]sqstypes.SendMessageBatchRequestEntry, len(batch))
+		for j, link := range batch {
+			id := strconv.Itoa(i + j)
+			linkCopy := link
+			entries[j] = sqstypes.SendMessageBatchRequestEntry{
+				Id:          &id,
+				MessageBody: &linkCopy,
+				MessageAttributes: map[string]sqstypes.MessageAttributeValue{
+					"depth": {
+						DataType:    aws.String("Number"),
+						StringValue: &depthStr,
+					},
 				},
-			},
+			}
+		}
+
+		result, err := c.sqs.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{
+			QueueUrl: &c.queueURL,
+			Entries:  entries,
 		})
 		if err != nil {
-			c.log.Error().Err(err).Str("url", link).Msg("Failed to enqueue link")
+			c.log.Error().Err(err).Int("batch_size", len(batch)).Msg("Failed to batch-enqueue links")
 			continue
 		}
 
-		enqueued++
+		enqueued += len(batch) - len(result.Failed)
+		for _, fail := range result.Failed {
+			c.log.Error().Str("id", *fail.Id).Str("code", *fail.Code).Msg("Failed to enqueue link in batch")
+		}
 	}
 
 	if newDomains > 0 {
@@ -173,6 +181,81 @@ func extractText(body []byte) string {
 	extractNode(doc)
 
 	return sb.String()
+}
+
+// ParseResult holds both extracted links and text from a single HTML parse pass.
+type ParseResult struct {
+	Links []string
+	Text  string
+}
+
+// parseAndExtract parses HTML once, extracting both links and visible text in a single traversal.
+// This avoids the double-parse cost of calling extractLinks + extractText separately.
+func parseAndExtract(body []byte, baseURLStr string) ParseResult {
+	baseURL, err := url.Parse(baseURLStr)
+	if err != nil {
+		return ParseResult{}
+	}
+
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return ParseResult{}
+	}
+
+	var links []string
+	seen := make(map[string]bool)
+	var sb strings.Builder
+
+	var traverse func(*html.Node)
+	traverse = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			// Skip non-visible elements for text extraction
+			switch n.Data {
+			case "script", "style", "noscript", "head", "meta", "link":
+				return
+			}
+
+			// Extract links from <a> elements
+			if n.Data == "a" {
+				for _, attr := range n.Attr {
+					if attr.Key == "href" {
+						link := normalizeURL(attr.Val, baseURL)
+						if link != "" && !seen[link] {
+							seen[link] = true
+							links = append(links, link)
+						}
+						break
+					}
+				}
+			}
+		}
+
+		// Extract text nodes
+		if n.Type == html.TextNode {
+			text := strings.TrimSpace(n.Data)
+			if text != "" {
+				if sb.Len() > 0 {
+					sb.WriteString(" ")
+				}
+				sb.WriteString(text)
+			}
+		}
+
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			traverse(child)
+		}
+	}
+	traverse(doc)
+
+	return ParseResult{Links: links, Text: sb.String()}
+}
+
+func mustParseURL(s string) *url.URL {
+	u, err := url.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }
 
 // normalizeURL converts a potentially relative URL to an absolute URL
