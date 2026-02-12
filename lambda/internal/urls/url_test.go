@@ -1,4 +1,4 @@
-package main
+package urls
 
 import (
 	"testing"
@@ -13,43 +13,43 @@ func TestHashURL(t *testing.T) {
 		{
 			name:  "consistent hash",
 			input: "https://example.com",
-			want:  hashURL("https://example.com"), // deterministic
+			want:  Hash("https://example.com"), // deterministic
 		},
 		{
 			name:  "different URLs produce different hashes",
 			input: "https://example.com/page",
-			want:  hashURL("https://example.com/page"),
+			want:  Hash("https://example.com/page"),
 		},
 		{
 			name:  "empty string",
 			input: "",
-			want:  hashURL(""),
+			want:  Hash(""),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hashURL(tt.input)
+			got := Hash(tt.input)
 			if got != tt.want {
-				t.Errorf("hashURL(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("Hash(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 			// SHA256 output is 64 hex chars
 			if len(got) != 64 {
-				t.Errorf("hashURL(%q) length = %d, want 64", tt.input, len(got))
+				t.Errorf("Hash(%q) length = %d, want 64", tt.input, len(got))
 			}
 		})
 	}
 
 	// Same input always produces same output
-	first := hashURL("https://example.com")
-	second := hashURL("https://example.com")
+	first := Hash("https://example.com")
+	second := Hash("https://example.com")
 	if first != second {
-		t.Error("hashURL is not deterministic")
+		t.Error("Hash is not deterministic")
 	}
 
 	// Different inputs produce different outputs
-	if hashURL("https://a.com") == hashURL("https://b.com") {
-		t.Error("hashURL collision for different inputs")
+	if Hash("https://a.com") == Hash("https://b.com") {
+		t.Error("Hash collision for different inputs")
 	}
 }
 
@@ -69,9 +69,9 @@ func TestGetDomain(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getDomain(tt.input)
+			got := GetDomain(tt.input)
 			if got != tt.want {
-				t.Errorf("getDomain(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("GetDomain(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -91,10 +91,17 @@ func TestGetHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getHost(tt.input)
+			got := GetHost(tt.input)
 			if got != tt.want {
-				t.Errorf("getHost(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("GetHost(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// BenchmarkHashURL measures URL hashing
+func BenchmarkHashURL(b *testing.B) {
+	for b.Loop() {
+		Hash("https://example.com/some/very/long/path?with=params&and=more")
 	}
 }

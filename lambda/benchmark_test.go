@@ -88,13 +88,6 @@ func BenchmarkGzipDecompress(b *testing.B) {
 	}
 }
 
-// BenchmarkHashURL measures URL hashing
-func BenchmarkHashURL(b *testing.B) {
-	for b.Loop() {
-		hashURL("https://example.com/some/very/long/path?with=params&and=more")
-	}
-}
-
 func generateBenchHTML(numLinks int) string {
 	var sb strings.Builder
 	sb.WriteString("<html><head><title>Test Page</title></head><body>")

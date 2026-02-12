@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"lambda/internal/urls"
 	"strconv"
 	"time"
 
@@ -50,7 +51,7 @@ func (c *Crawler) checkRateLimit(ctx context.Context, domain string) bool {
 
 // handleRateLimited resets URL to queued and re-queues with delay
 func (c *Crawler) handleRateLimited(ctx context.Context, targetURL, urlHash string, depth int) error {
-	c.log.Info().Str("url", targetURL).Str("domain", getDomain(targetURL)).Msg("Rate limited, re-queuing")
+	c.log.Info().Str("url", targetURL).Str("domain", urls.GetDomain(targetURL)).Msg("Rate limited, re-queuing")
 
 	// Reset to queued
 	_, _ = c.ddb.UpdateItem(ctx, &dynamodb.UpdateItemInput{

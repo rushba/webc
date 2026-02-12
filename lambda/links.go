@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"lambda/internal/urls"
 	"net/url"
 	"strconv"
 	"strings"
@@ -26,7 +27,7 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, s
 	var pending []string
 
 	for _, link := range links {
-		host := getHost(link)
+		host := urls.GetHost(link)
 		if host == "" {
 			continue
 		}
@@ -40,7 +41,7 @@ func (c *Crawler) enqueueLinks(ctx context.Context, links []string, depth int, s
 			}
 		}
 
-		urlHash := hashURL(link)
+		urlHash := urls.Hash(link)
 
 		// Try to add to DynamoDB (will fail if already exists)
 		_, err := c.ddb.PutItem(ctx, &dynamodb.PutItemInput{

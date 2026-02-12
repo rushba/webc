@@ -1,4 +1,4 @@
-package main
+package urls
 
 import (
 	"crypto/sha256"
@@ -6,13 +6,13 @@ import (
 	"net/url"
 )
 
-func hashURL(u string) string {
+func Hash(u string) string {
 	h := sha256.Sum256([]byte(u))
 	return hex.EncodeToString(h[:])
 }
 
-// getDomain extracts the domain (scheme + host) from a URL
-func getDomain(urlStr string) string {
+// GetDomain extracts the domain (scheme + host) from a URL
+func GetDomain(urlStr string) string {
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return ""
@@ -20,8 +20,8 @@ func getDomain(urlStr string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
-// getHost extracts just the host from a URL (without scheme)
-func getHost(urlStr string) string {
+// GetHost extracts just the host from a URL (without scheme)
+func GetHost(urlStr string) string {
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return ""

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"lambda/internal/urls"
 	"strconv"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -22,7 +23,7 @@ func (c *Crawler) Handler(ctx context.Context, sqsEvent events.SQSEvent) error {
 
 func (c *Crawler) processMessage(ctx context.Context, record *events.SQSMessage) error {
 	targetURL := record.Body
-	urlHash := hashURL(targetURL)
+	urlHash := urls.Hash(targetURL)
 	depth := c.extractDepth(record)
 
 	c.log.Info().Str("url", targetURL).Int("depth", depth).Msg("Processing")
@@ -38,7 +39,7 @@ func (c *Crawler) processMessage(ctx context.Context, record *events.SQSMessage)
 		return c.markStatus(ctx, urlHash, stateRobotsBlocked)
 	}
 
-	if !c.checkRateLimit(ctx, getDomain(targetURL)) {
+	if !c.checkRateLimit(ctx, urls.GetDomain(targetURL)) {
 		return c.handleRateLimited(ctx, targetURL, urlHash, depth)
 	}
 
