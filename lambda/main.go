@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"lambda/internal/ssrf"
 	"net/http"
 	"os"
 	"strconv"
@@ -97,7 +98,7 @@ func NewCrawler(ctx context.Context) (*Crawler, error) {
 		s3:  awss3.NewFromConfig(cfg),
 		httpClient: &http.Client{
 			Timeout:   httpTimeout,
-			Transport: ssrfSafeTransport(),
+			Transport: ssrf.NewTransport(),
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

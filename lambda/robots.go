@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"lambda/internal/ssrf"
 	"net/http"
 	"net/url"
 
@@ -27,7 +28,7 @@ func (c *Crawler) getRobots(ctx context.Context, urlStr string) *robotstxt.Robot
 	robotsURL := domain + "/robots.txt"
 
 	// SSRF protection: block requests to private/internal IPs
-	if err := validateHost(parsed.Host); err != nil {
+	if err := ssrf.ValidateHost(parsed.Host); err != nil {
 		c.log.Warn().Str("domain", domain).Err(err).Msg("SSRF blocked for robots.txt")
 		c.robotsCache[domain] = nil
 		return nil
