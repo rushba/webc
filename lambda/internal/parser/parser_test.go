@@ -1,7 +1,6 @@
-package main
+package parser
 
 import (
-	"net/url"
 	"testing"
 )
 
@@ -216,7 +215,7 @@ func TestParseAndExtract(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := parseAndExtract([]byte(tt.html), tt.baseURL)
+			result := Extract([]byte(tt.html), tt.baseURL)
 
 			if len(result.Links) != len(tt.wantLinks) {
 				t.Fatalf("parseAndExtract() links = %d, want %d\ngot:  %v\nwant: %v", len(result.Links), len(tt.wantLinks), result.Links, tt.wantLinks)
@@ -243,7 +242,7 @@ func TestParseAndExtractMatchesSeparateFunctions(t *testing.T) {
 	</body></html>`
 	baseURL := "https://example.com"
 
-	combined := parseAndExtract([]byte(html), baseURL)
+	combined := Extract([]byte(html), baseURL)
 	separateLinks := extractLinks([]byte(html), baseURL)
 	separateText := extractText([]byte(html))
 
@@ -257,39 +256,5 @@ func TestParseAndExtractMatchesSeparateFunctions(t *testing.T) {
 	}
 	if combined.Text != separateText {
 		t.Errorf("text mismatch:\ncombined: %q\nseparate: %q", combined.Text, separateText)
-	}
-}
-
-func TestNormalizeURL(t *testing.T) {
-	base, _ := url.Parse("https://example.com/dir/page")
-
-	tests := []struct {
-		name string
-		href string
-		want string
-	}{
-		{"absolute https", "https://other.com/page", "https://other.com/page"},
-		{"absolute http", "http://other.com/page", "http://other.com/page"},
-		{"relative path", "/about", "https://example.com/about"},
-		{"relative to current dir", "sibling", "https://example.com/dir/sibling"},
-		{"with fragment removed", "/page#section", "https://example.com/page"},
-		{"empty string", "", ""},
-		{"fragment only", "#top", ""},
-		{"javascript", "javascript:void(0)", ""},
-		{"mailto", "mailto:user@example.com", ""},
-		{"tel", "tel:+1234567890", ""},
-		{"data uri", "data:text/html,hello", ""},
-		{"ftp scheme rejected", "ftp://files.example.com/file", ""},
-		{"with query string", "/search?q=test", "https://example.com/search?q=test"},
-		{"whitespace trimmed", "  /page  ", "https://example.com/page"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeURL(tt.href, base)
-			if got != tt.want {
-				t.Errorf("normalizeURL(%q) = %q, want %q", tt.href, got, tt.want)
-			}
-		})
 	}
 }

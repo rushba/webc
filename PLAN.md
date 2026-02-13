@@ -799,6 +799,16 @@ Recommended order: A3 (SSRF, quick security fix) → A4 (concurrency limit, quic
 
 ---
 
+### A17 — Replace verbose DynamoDB attribute construction with `attributevalue` package
+
+**Problem**: DynamoDB operations use raw `map[string]types.AttributeValue` with `&types.AttributeValueMemberS{Value: "..."}` everywhere. Verbose and hard to read.
+
+**Recommendation**: Use `github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue` to marshal/unmarshal Go structs directly, similar to `encoding/json`. Touches every DynamoDB call — do as a standalone cleanup.
+
+**Status**: [ ] Pending
+
+---
+
 # Phase 10 Plan — Monitoring
 
 ## Goal

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"lambda/internal/parser"
 	"lambda/internal/urls"
 	"strconv"
 
@@ -85,7 +86,7 @@ func (c *Crawler) processHTMLContent(ctx context.Context, targetURL, urlHash str
 	}
 
 	// Single-pass parse: extract both text and links
-	parsed := parseAndExtract(result.Body, targetURL)
+	parsed := parser.Extract(result.Body, targetURL)
 
 	// Upload to S3
 	uploadResult, err := c.uploadContent(ctx, urlHash, result.Body, parsed.Text)
