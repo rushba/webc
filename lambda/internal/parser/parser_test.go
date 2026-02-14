@@ -258,3 +258,29 @@ func TestParseAndExtractMatchesSeparateFunctions(t *testing.T) {
 		t.Errorf("text mismatch:\ncombined: %q\nseparate: %q", combined.Text, separateText)
 	}
 }
+
+func TestIsHTML(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		want        bool
+	}{
+		{"text/html", "text/html", true},
+		{"text/html with charset", "text/html; charset=utf-8", true},
+		{"application/xhtml", "application/xhtml+xml", true},
+		{"text/plain", "text/plain", false},
+		{"application/json", "application/json", false},
+		{"image/png", "image/png", false},
+		{"empty", "", false},
+		{"case insensitive", "Text/HTML", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsHTML(tt.contentType)
+			if got != tt.want {
+				t.Errorf("isHTML(%q) = %v, want %v", tt.contentType, got, tt.want)
+			}
+		})
+	}
+}

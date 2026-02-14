@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"strings"
-	"sync"
+	"lambda/internal/compress"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -32,7 +30,7 @@ func (c *Crawler) uploadContent(ctx context.Context, urlHash string, rawHTML []b
 
 	// Upload raw HTML (gzip compressed) concurrently
 	g.Go(func() error {
-		rawGz, err := gzipCompressPooled(rawHTML)
+		rawGz, err := compress.Gzip(rawHTML)
 		if err != nil {
 			return err
 		}
@@ -48,7 +46,7 @@ func (c *Crawler) uploadContent(ctx context.Context, urlHash string, rawHTML []b
 
 	// Upload extracted text (gzip compressed) concurrently
 	g.Go(func() error {
-		textGz, err := gzipCompressPooled([]byte(text))
+		textGz, err := compress.Gzip([]byte(text))
 		if err != nil {
 			return err
 		}
@@ -66,42 +64,6 @@ func (c *Crawler) uploadContent(ctx context.Context, urlHash string, rawHTML []b
 		return nil, err
 	}
 	return result, nil
-}
-
-// gzipCompress compresses data using gzip
-func gzipCompress(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(data); err != nil {
-		return nil, err
-	}
-	if err := gz.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-var gzipWriterPool = sync.Pool{
-	New: func() any {
-		return gzip.NewWriter(nil)
-	},
-}
-
-// gzipCompressPooled compresses data using a pooled gzip writer to reduce GC pressure
-func gzipCompressPooled(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	gz := gzipWriterPool.Get().(*gzip.Writer)
-	gz.Reset(&buf)
-	if _, err := gz.Write(data); err != nil {
-		gzipWriterPool.Put(gz)
-		return nil, err
-	}
-	if err := gz.Close(); err != nil {
-		gzipWriterPool.Put(gz)
-		return nil, err
-	}
-	gzipWriterPool.Put(gz)
-	return buf.Bytes(), nil
 }
 
 // saveS3Keys updates DynamoDB with S3 content locations
@@ -123,10 +85,4 @@ func (c *Crawler) saveS3Keys(ctx context.Context, targetURL, urlHash string, upl
 		return
 	}
 	c.log.Info().Str("url", targetURL).Str("raw_key", upload.RawKey).Str("text_key", upload.TextKey).Int("text_len", textLen).Msg("Uploaded content to S3")
-}
-
-// isHTML checks if content type indicates HTML
-func isHTML(contentType string) bool {
-	ct := strings.ToLower(contentType)
-	return strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
 }

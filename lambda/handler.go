@@ -81,7 +81,7 @@ func (c *Crawler) extractDepth(record *events.SQSMessage) int {
 // processHTMLContent uploads content to S3 and extracts links.
 // Uses single-pass HTML parsing to extract both text and links together.
 func (c *Crawler) processHTMLContent(ctx context.Context, targetURL, urlHash string, result *FetchResult, depth int) {
-	if !isHTML(result.ContentType) || len(result.Body) == 0 {
+	if !parser.IsHTML(result.ContentType) || len(result.Body) == 0 {
 		return
 	}
 

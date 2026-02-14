@@ -152,3 +152,9 @@ func Extract(body []byte, baseURLStr string) Result {
 
 	return Result{Links: links, Text: sb.String()}
 }
+
+// IsHTML checks if content type indicates HTML
+func IsHTML(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
+}
