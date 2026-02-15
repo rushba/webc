@@ -1,4 +1,4 @@
-module cdk-test
+module stack
 
 go 1.25
 

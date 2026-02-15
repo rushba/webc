@@ -24,8 +24,8 @@ cd lambda && go test ./...    # Run tests
 cd lambda && go test -run TestFunctionName ./...  # Single test
 
 # CDK
-cd cdk && go build ./...
-cd cdk && go test ./...
+cd stack && go build ./...
+cd stack && go test ./...
 STAGE=dev cdk deploy          # Deploy (STAGE defaults to "dev")
 cdk destroy                   # Tear down stack
 
@@ -45,7 +45,7 @@ cd tools/cleanup && go run . --bucket # Clear S3 only
 
 | Module | Purpose |
 |--------|---------|
-| `cdk/` | AWS CDK infrastructure (stack name: `CrawlerStack-{STAGE}`) |
+| `stack/` | AWS CDK infrastructure (stack name: `CrawlerStack-{STAGE}`) |
 | `lambda/` | Serverless crawler — fetches URLs, extracts links, uploads to S3 |
 | `producer/` | CLI to enqueue seed URLs with DynamoDB dedup |
 | `consumer/` | Legacy polling worker (replaced by Lambda) |
@@ -54,14 +54,17 @@ cd tools/cleanup && go run . --bucket # Clear S3 only
 **Lambda file organization** (`package main`, split by concern):
 - `main.go` — Crawler struct, constants, initialization
 - `handler.go` — SQS batch handler, message processing orchestration
-- `fetch.go` — HTTP fetching, SSRF protection, error classification
+- `fetch.go` — HTTP fetching, error classification
 - `robots.go` — robots.txt fetching and checking
 - `ratelimit.go` — Per-domain rate limiting via DynamoDB
-- `storage.go` — S3 upload (gzip compressed HTML + extracted text)
+- `storage.go` — S3 upload, DynamoDB S3 key tracking
 - `state.go` — DynamoDB state transitions (claimURL, markStatus, saveFetchResult)
-- `links.go` — HTML link extraction, URL normalization, link enqueuing, domain discovery
+- `links.go` — Link enqueuing, domain discovery
 - `domain.go` — Domain allowlist management
-- `url.go` — URL hashing (SHA-256) and parsing helpers
+- `internal/urls/` — URL hashing, domain/host parsing, normalization
+- `internal/ssrf/` — SSRF protection (IP validation, safe transport)
+- `internal/parser/` — HTML link/text extraction, content type detection
+- `internal/compress/` — Gzip compression with pooled writers
 
 **Data flow**: Producer → SQS → Lambda → {DynamoDB (state), S3 (content)} → SQS (discovered links, up to MAX_DEPTH=3)
 
@@ -80,13 +83,13 @@ cd tools/cleanup && go run . --bucket # Clear S3 only
 
 ## Git Rules
 
-- **Never commit binary files**: `lambda/bootstrap`, `lambda/bootstrap.zip`, `cdk/cdk-test`, `consumer/consumer`, `producer/producer`, `tools/cleanup/cleanup`
+- **Never commit binary files**: `lambda/bootstrap`, `lambda/bootstrap.zip`, `stack/stack`, `consumer/consumer`, `producer/producer`, `tools/cleanup/cleanup`
 - If a binary appears in `git status`, run `git rm --cached <file>` before committing
 - Pre-commit hooks run: trailing whitespace fix, AWS credential detection, go build, go test, golangci-lint
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`): builds all modules, tests all modules, lints `lambda/` and `cdk/` with golangci-lint v2.1.
+GitHub Actions (`.github/workflows/ci.yml`): builds all modules, tests all modules, lints `lambda/` and `stack/` with golangci-lint v2.1.
 
 ## Environment
 

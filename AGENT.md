@@ -17,7 +17,7 @@ Distributed web crawler using AWS (SQS, DynamoDB, Lambda, S3) and Go.
 
 ## Directory Structure
 ```
-cdk/           → CDK infrastructure (Go)
+stack/         → CDK infrastructure (Go)
 producer/      → URL ingestion CLI
 consumer/      → Message processor (legacy, replaced by Lambda)
 lambda/        → Serverless crawler
@@ -32,7 +32,7 @@ CONTENT_BUCKET=<from CDK output>  # Phase 11
 ```
 
 ## Key Files
-- `cdk/cdk-test.go` → Infrastructure definition
+- `stack/stack.go` → Infrastructure definition
 - `lambda/main.go` → Serverless crawler
 - `producer/main.go` → Enqueues URLs with dedup
 
@@ -62,7 +62,7 @@ Only ONE Lambda wins the race. Losers ACK and exit.
 - **NEVER commit binary files** - check `git status` before committing
 - Binaries to watch for (all in .gitignore):
   - `lambda/lambda`, `lambda/bootstrap`, `lambda/bootstrap.zip`
-  - `cdk/cdk-test`
+  - `stack/stack`
   - `consumer/consumer`, `producer/producer`
   - `tools/cleanup/cleanup`
   - `tools/domains/domains` (future)

@@ -22,7 +22,7 @@ cdk.out
 lambda/bootstrap
 lambda/bootstrap.zip
 lambda/lambda
-cdk/cdk-test
+stack/stack
 consumer/consumer
 producer/producer
 tools/cleanup/cleanup

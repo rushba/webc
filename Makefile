@@ -1,4 +1,4 @@
-MODULES := cdk consumer lambda producer tools/cleanup
+MODULES := stack consumer lambda producer tools/cleanup
 
 .PHONY: build test deploy clean lint fmt
 

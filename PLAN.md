@@ -594,7 +594,7 @@ Adjust based on observed load and cost tolerance.
 ### A5 — Standardize Go versions across modules
 
 **Problem**: Inconsistent Go versions:
-- `cdk/` and `tools/cleanup/`: Go 1.23
+- `stack/` and `tools/cleanup/`: Go 1.23
 - `lambda/`: Go 1.24
 - `producer/` and `consumer/`: Go 1.25.5
 
@@ -767,7 +767,7 @@ Mark permanent failures as `status: failed` with a reason in DynamoDB.
 
 **Recommendation**: Change to something like:
 ```
-"MyCrawler/1.0 (+https://github.com/yourname/cdk-test)"
+"MyCrawler/1.0 (+https://github.com/rushba/webc)"
 ```
 
 **Status**: [ ] Pending
@@ -1136,7 +1136,7 @@ lambda/
 ### Step 6.3 — Add Lambda to CDK
 **What**: Define Lambda function in CDK with SQS trigger.
 **Why**: Infrastructure as code.
-**How**: Update `cdk/cdk-test.go`
+**How**: Update `stack/stack.go`
 
 **Changes**:
 - Added `awslambda.NewFunction` with:

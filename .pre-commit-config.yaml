@@ -20,7 +20,7 @@ repos:
     hooks:
       - id: go-build
         name: go build
-        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do echo "Building $dir..." && (cd "$dir" && go build ./...) || exit 1; done'
+        entry: bash -c 'for dir in stack consumer lambda producer tools/cleanup; do echo "Building $dir..." && (cd "$dir" && go build ./...) || exit 1; done'
         language: system
         pass_filenames: false
         types: [go]
@@ -30,7 +30,7 @@ repos:
     hooks:
       - id: go-test
         name: go test
-        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do if ls "$dir"/*_test.go >/dev/null 2>&1; then echo "Testing $dir..." && (cd "$dir" && go test ./...) || exit 1; fi; done'
+        entry: bash -c 'for dir in stack consumer lambda producer tools/cleanup; do if ls "$dir"/*_test.go >/dev/null 2>&1; then echo "Testing $dir..." && (cd "$dir" && go test ./...) || exit 1; fi; done'
         language: system
         pass_filenames: false
         types: [go]
@@ -40,7 +40,7 @@ repos:
     hooks:
       - id: golangci-lint
         name: golangci-lint
-        entry: bash -c 'for dir in cdk consumer lambda producer tools/cleanup; do echo "Linting $dir..." && (cd "$dir" && golangci-lint run --fix ./...) || exit 1; done'
+        entry: bash -c 'for dir in stack consumer lambda producer tools/cleanup; do echo "Linting $dir..." && (cd "$dir" && golangci-lint run --fix ./...) || exit 1; done'
         language: system
         pass_filenames: false
         types: [go]

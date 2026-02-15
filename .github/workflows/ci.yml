@@ -18,14 +18,14 @@ jobs:
 
       - name: Build all modules
         run: |
-          for dir in cdk consumer lambda producer tools/cleanup; do
+          for dir in stack consumer lambda producer tools/cleanup; do
             echo "Building $dir..."
             (cd "$dir" && go build ./...)
           done
 
       - name: Test all modules
         run: |
-          for dir in cdk consumer lambda producer tools/cleanup; do
+          for dir in stack consumer lambda producer tools/cleanup; do
             if ls "$dir"/*_test.go >/dev/null 2>&1; then
               echo "Testing $dir..."
               (cd "$dir" && go test ./...)
@@ -39,9 +39,9 @@ jobs:
           working-directory: lambda
           args: ./...
 
-      - name: Lint cdk
+      - name: Lint stack
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.8
-          working-directory: cdk
+          working-directory: stack
           args: ./...
